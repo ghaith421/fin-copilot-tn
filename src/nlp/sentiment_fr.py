@@ -224,6 +224,32 @@ def score_news():
 
     return df
 
+def score_news_keywords_only():
+    """Version rapide : mots-cles uniquement (pas d'API)."""
+    path = f"{DATA_RAW}/banks_news.parquet"
+    df = pd.read_parquet(path).reset_index(drop=True)
+    print(f"[sentiment-kw] {len(df)} news a analyser")
 
+    kw_sentiments = []
+    events = []
+    for _, row in df.iterrows():
+        text = (row["title"] or "") + " " + (row.get("summary", "") or "")
+        kw_sentiments.append(keyword_sentiment(text))
+        events.append(detect_event(text))
+
+    df["sentiment_kw"] = kw_sentiments
+    df["sentiment"] = kw_sentiments
+    df["event_type"] = events
+    df["impact"] = df["sentiment"].apply(impact_from_score)
+
+    out = f"{DATA_RAW}/banks_news_scored.parquet"
+    df.to_parquet(out)
+    print(f"[sentiment-kw] Sauvegarde -> {out}")
+    print(f"Sentiment moyen : {df['sentiment'].mean():+.3f}")
+    return df
 if __name__ == "__main__":
-    score_news()
+    import sys
+    if "--keywords-only" in sys.argv:
+        score_news_keywords_only()
+    else:
+        score_news()
