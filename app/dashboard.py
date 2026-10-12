@@ -50,12 +50,7 @@ def load_prices():
         df["date"] = pd.to_datetime(df["date"])
         return df
     except Exception:
-        try:
-            df = pd.read_parquet(f"{DATA_RAW}/bvmt_prices.parquet")
-            df["date"] = pd.to_datetime(df["date"])
-            return df
-        except Exception:
-            return pd.DataFrame()
+        return pd.DataFrame()
 
 
 @st.cache_data(ttl=60)
@@ -63,10 +58,27 @@ def load_news():
     try:
         return pd.read_parquet(f"{DATA_RAW}/banks_news_scored.parquet")
     except Exception:
-        try:
-            return pd.read_parquet(f"{DATA_RAW}/banks_news.parquet")
-        except Exception:
-            return pd.DataFrame()
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=60)
+def load_index():
+    try:
+        df = pd.read_parquet(f"{DATA_RAW}/bank_index.parquet")
+        df["date"] = pd.to_datetime(df["date"])
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=60)
+def load_impact():
+    try:
+        df = pd.read_parquet(f"{DATA_RAW}/news_impact_clean.parquet")
+        df["date"] = pd.to_datetime(df["date"])
+        return df
+    except Exception:
+        return pd.DataFrame()
 
 
 @st.cache_data(ttl=300)
@@ -80,13 +92,14 @@ def load_regression():
         results = run_all_regressions(df)
         events = analyze_by_event(df)
         return df, (results, events)
-    except Exception as e:
-        print(f"[reg] Erreur : {e}")
+    except Exception:
         return None, None
 
 
 prices = load_prices()
 news = load_news()
+index_df = load_index()
+impact = load_impact()
 sent_col = "sentiment" if "sentiment" in news.columns else ("sentiment_kw" if "sentiment_kw" in news.columns else None)
 
 st.sidebar.header("Parametres")
@@ -108,9 +121,9 @@ if st.sidebar.button("Actualiser maintenant", use_container_width=True):
 st.sidebar.markdown("---")
 st.sidebar.markdown(f"Heure : {datetime.now().strftime('%H:%M:%S')}")
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "Vue d'ensemble", "Detail banque", "News", "Prix",
-    "Econometrie", "Chatbot"
+    "Impact News", "Econometrie", "Chatbot"
 ])
 
 # ===== ONGLET 1 =====
@@ -118,13 +131,11 @@ with tab1:
     st.subheader("Secteur bancaire tunisien — Vue d'ensemble")
 
     if len(news) == 0 or sent_col is None:
-        st.warning("Aucune news. Attends le rafraichissement.")
+        st.warning("Aucune news.")
     else:
         stats_df = news.groupby("tickers").agg(
             sentiment_moyen=(sent_col, "mean"),
             nb_news=(sent_col, "count"),
-            positifs=(sent_col, lambda s: (s > 0.2).sum()),
-            negatifs=(sent_col, lambda s: (s < -0.2).sum()),
         ).round(3).sort_values("sentiment_moyen", ascending=False)
 
         col1, col2, col3, col4 = st.columns(4)
@@ -147,9 +158,6 @@ with tab1:
         fig.update_layout(height=400, yaxis_range=[-1, 1], showlegend=False)
         st.plotly_chart(fig, use_container_width=True)
 
-        st.markdown("### Tableau recapitulatif")
-        st.dataframe(stats_df, use_container_width=True)
-
 # ===== ONGLET 2 =====
 with tab2:
     if ticker == "-" or sent_col is None:
@@ -171,10 +179,8 @@ with tab2:
                 st.metric("Dernier prix", f"{price_t.iloc[-1]['close']:.2f} DT")
 
             if len(price_t) > 1:
-                st.markdown("### Evolution du prix")
                 fig = go.Figure()
-                fig.add_trace(go.Scatter(x=price_t["date"], y=price_t["close"],
-                                         mode="lines", name="Prix"))
+                fig.add_trace(go.Scatter(x=price_t["date"], y=price_t["close"], mode="lines"))
                 fig.update_layout(height=300)
                 st.plotly_chart(fig, use_container_width=True)
 
@@ -182,20 +188,17 @@ with tab2:
             for _, r in news_t.head(30).iterrows():
                 s = r[sent_col]
                 icon = "[+]" if s > 0.2 else ("[-]" if s < -0.2 else "[=]")
-                st.markdown(f"{icon} **{r['title'][:120]}** — `{s:+.2f}` ({r.get('event_type', '')})")
+                st.markdown(f"{icon} **{r['title'][:120]}** — `{s:+.2f}`")
 
 # ===== ONGLET 3 =====
 with tab3:
-    st.subheader("Toutes les news bancaires")
-    if len(news) == 0:
-        st.warning("Aucune news.")
-    else:
+    st.subheader("Toutes les news")
+    if len(news) > 0:
         df_f = news.sort_values("date", ascending=False).head(50)
         for _, r in df_f.iterrows():
             s = r[sent_col]
             icon = "[+]" if s > 0.2 else ("[-]" if s < -0.2 else "[=]")
             with st.expander(f"{icon} [{r['tickers']}] {r['title'][:100]} ({s:+.2f})"):
-                st.markdown(f"**Titre** : {r['title']}")
                 st.markdown(f"**Banque** : {r['tickers']}")
                 st.markdown(f"**Sentiment** : `{s:+.3f}`")
                 st.markdown(f"**Type** : `{r.get('event_type', '?')}`")
@@ -205,13 +208,10 @@ with tab3:
 # ===== ONGLET 4 =====
 with tab4:
     st.subheader("Prix des banques")
-    if len(prices) == 0:
-        st.warning("Aucun prix.")
-    else:
+    if len(prices) > 0:
         last_prices = prices.sort_values("date").groupby("ticker").last().reset_index()
         col1, col2 = st.columns([1, 2])
         with col1:
-            st.markdown("### Derniers cours")
             for _, r in last_prices.sort_values("ticker").iterrows():
                 st.metric(r["ticker"], f"{r['close']:.2f} DT")
         with col2:
@@ -222,82 +222,177 @@ with tab4:
             fig.update_layout(height=500, hovermode="x unified")
             st.plotly_chart(fig, use_container_width=True)
 
-# ===== ONGLET 5 : ECONOMETRIE EXPLIQUEE =====
+# ===== ONGLET 5 : IMPACT NEWS =====
 with tab5:
-    st.subheader("Analyse econometrique : le sentiment predit-il le cours ?")
+    st.subheader("📊 Impact des news sur le cours")
+    st.caption("Pour chaque news : sentiment, evolution du cours, comparaison a l'indice bancaire")
 
-    # =======================================================
-    # GLOSSAIRE PEDAGOGIQUE
-    # =======================================================
-    with st.expander("📚 Glossaire : comprendre les chiffres (cliquez pour ouvrir)", expanded=False):
+    with st.expander("📚 Comment lire ce tableau ?", expanded=False):
+        st.markdown("""
+### 🎯 Objectif
+
+Voir **comment le cours a réagi** après chaque news.
+
+### 📊 Les colonnes
+
+| Colonne | Signification |
+|---|---|
+| **Sentiment** | Score de la news (-1 = négatif, +1 = positif) |
+| **Prix news** | Prix du cours le jour de la news |
+| **Prix J+1/J+5/J+20** | Prix 1, 5, 20 jours après |
+| **Var %** | Variation en % |
+| **Indice** | Rendement de l'indice bancaire sur la même période |
+| **Alpha** | **Surperformance** = Var news - Var indice |
+| **Verdict** | Sentiment confirmé par le cours ? |
+
+### 🎯 Alpha, c'est quoi ?
+
+**L'alpha** mesure la **surperformance** par rapport au marché.
+
+- **Alpha > 0** → La news a fait **mieux que le marché** ✅
+- **Alpha < 0** → La news a fait **moins bien que le marché** ❌
+
+C'est **la mesure la plus importante** en finance.
+        """)
+
+    if len(impact) == 0:
+        st.warning("Aucune donnee d'impact. Lance : python -m src.analysis.news_impact_clean")
+    else:
+        # Stats par sentiment
+        df_clean = impact[(impact["has_dividend"] == False) & (impact["var_j20_pct"].notna())]
+        df_pos = df_clean[df_clean["sentiment"] > 0.1]
+        df_neg = df_clean[df_clean["sentiment"] < -0.1]
+
+        st.markdown("### 🎯 Resultats globaux (vs indice bancaire)")
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("#### 🟢 News positives")
+            if len(df_pos) > 0:
+                st.metric("Nombre", len(df_pos))
+                st.metric("Rendement moyen J+20", f"{df_pos['var_j20_pct'].mean():+.2f}%")
+                if "bench_j20_pct" in df_pos.columns:
+                    st.metric("Indice bancaire J+20", f"{df_pos['bench_j20_pct'].mean():+.2f}%")
+                    st.metric("Alpha moyen J+20",
+                              f"{df_pos['alpha_j20_pct'].mean():+.2f} pp",
+                              delta="Surperformance" if df_pos['alpha_j20_pct'].mean() > 0 else "Sous-performance")
+                hit = (df_pos["var_j20_pct"] > 0).mean() * 100
+                st.metric("Taux de hausse", f"{hit:.1f}%")
+            else:
+                st.info("Aucune news positive")
+
+        with col2:
+            st.markdown("#### 🔴 News negatives")
+            if len(df_neg) > 0:
+                st.metric("Nombre", len(df_neg))
+                st.metric("Rendement moyen J+20", f"{df_neg['var_j20_pct'].mean():+.2f}%")
+                if "bench_j20_pct" in df_neg.columns:
+                    st.metric("Indice bancaire J+20", f"{df_neg['bench_j20_pct'].mean():+.2f}%")
+                    st.metric("Alpha moyen J+20",
+                              f"{df_neg['alpha_j20_pct'].mean():+.2f} pp",
+                              delta="Sous-performance" if df_neg['alpha_j20_pct'].mean() < 0 else "Surperformance")
+                hit = (df_neg["var_j20_pct"] < 0).mean() * 100
+                st.metric("Taux de baisse", f"{hit:.1f}%")
+            else:
+                st.info("Aucune news negative")
+
+        # Filtres
+        st.markdown("---")
+        st.markdown("### 📋 Toutes les news avec impact")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            filter_ticker = st.multiselect("Banques", banques_dispo, default=banques_dispo)
+        with col2:
+            filter_verdict = st.multiselect(
+                "Verdict",
+                sorted(impact["verdict"].unique().tolist()),
+                default=sorted(impact["verdict"].unique().tolist())
+            )
+        with col3:
+            only_with_impact = st.checkbox("Seulement avec J+20 mesurable", value=True)
+
+        df_display = impact[impact["ticker"].isin(filter_ticker)]
+        df_display = df_display[df_display["verdict"].isin(filter_verdict)]
+        if only_with_impact:
+            df_display = df_display[df_display["var_j20_pct"].notna()]
+
+        st.markdown(f"**{len(df_display)} news** correspondantes")
+
+        # Tableau affichage
+        display_cols = ["date", "ticker", "sentiment", "price_at_news",
+                        "var_j1_pct", "var_j5_pct", "var_j20_pct",
+                        "bench_j20_pct", "alpha_j20_pct", "verdict"]
+        display_cols = [c for c in display_cols if c in df_display.columns]
+
+        df_show = df_display[display_cols].copy().head(100)
+        for col in ["sentiment", "price_at_news", "var_j1_pct", "var_j5_pct", "var_j20_pct",
+                    "bench_j20_pct", "alpha_j20_pct"]:
+            if col in df_show.columns:
+                df_show[col] = df_show[col].round(2)
+
+        st.dataframe(df_show, use_container_width=True)
+
+        # Exemples detailles
+        st.markdown("---")
+        st.markdown("### 🔍 Exemples detailles")
+
+        for _, r in df_display.head(10).iterrows():
+            s = r["sentiment"]
+            icon = "🟢" if s > 0.2 else ("🔴" if s < -0.2 else "⚪")
+
+            with st.expander(f"{icon} [{r['ticker']}] {r['date'].strftime('%d/%m/%Y')} — {r['title'][:80]}"):
+                st.markdown(f"**Titre complet** : {r['title']}")
+                st.markdown(f"**Sentiment** : `{s:+.3f}`")
+                st.markdown(f"**Type** : `{r.get('event_type', '?')}`")
+                st.markdown(f"**Verdict** : `{r['verdict']}`")
+
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Prix news", f"{r['price_at_news']:.2f} DT")
+                col2.metric("J+5", f"{r['var_j5_pct']:+.2f}%" if pd.notna(r['var_j5_pct']) else "-")
+                col3.metric("J+20", f"{r['var_j20_pct']:+.2f}%" if pd.notna(r['var_j20_pct']) else "-")
+                if pd.notna(r.get('alpha_j20_pct')):
+                    col4.metric("Alpha J+20", f"{r['alpha_j20_pct']:+.2f} pp",
+                                delta="Superforme" if r['alpha_j20_pct'] > 0 else "Sous-performe")
+
+                if r.get("url"):
+                    st.markdown(f"[Lire la news]({r['url']})")
+
+# ===== ONGLET 6 : ECONOMETRIE =====
+with tab6:
+    st.subheader("📉 Analyse econometrique")
+
+    with st.expander("📚 Glossaire : comprendre les chiffres", expanded=False):
         st.markdown("""
 ### 🎯 Qu'est-ce qu'on cherche ?
 
-On veut savoir si **le sentiment des news** (positif/négatif) **influence le cours de bourse** des banques tunisiennes.
-
-Pour cela, on fait une **régression linéaire** : on trace la "meilleure droite" qui relie le sentiment au rendement futur du cours.
-
----
+On teste si **le sentiment des news influence le cours** via une **régression linéaire**.
 
 ### 📊 Les 4 chiffres clés
 
-| Indicateur | Signification | Valeurs | Comment lire |
-|---|---|---|---|
-| **Coefficient** | Combien le cours varie quand le sentiment augmente de +1.0 | +0.088 | **+0.088** = +8.8% de rendement à J+20 |
-| **R²** | Qualité du modèle (0 à 1) | 0.025 | **2.5%** de la variation est expliquée. En finance, >2% est **déjà bon** |
-| **P-value** | Probabilité que ce soit un hasard | 0.0067 | **< 0.05** = ✅ significatif. **< 0.01** = ✅✅ très significatif |
-| **n** | Nombre d'observations | 292 | Plus c'est grand, plus c'est fiable |
+| Indicateur | Signification | Bon si... |
+|---|---|---|
+| **Coefficient** | Variation du cours quand sentiment +1.0 | > 0 (positif) |
+| **R²** | Qualité du modèle (0 à 1) | > 0.02 (bon en finance) |
+| **P-value** | Probabilité que ce soit un hasard | < 0.05 (significatif) |
+| **n** | Nombre d'observations | Plus grand = mieux |
 
----
+### 🚦 Interprétation
 
-### 🎯 Les horizons temporels
-
-- **J+1** : le lendemain de la news → effet immédiat
-- **J+5** : 5 jours après → effet à court terme
-- **J+20** : 20 jours après (≈ 1 mois) → effet à moyen terme
-
-**Pourquoi 3 horizons ?** Pour voir si l'effet est immédiat, progressif, ou différé.
-
----
-
-### 🚦 Comment interpréter
-
-| Résultat | Signification |
-|---|---|
-| **p < 0.05** ✅ | L'effet est **réel**, pas un hasard |
-| **p > 0.05** ❌ | On **ne peut pas conclure** (effet peut-être nul) |
-| **Coefficient > 0** | Le sentiment **monte** → le cours **monte** |
-| **Coefficient < 0** | Le sentiment **monte** → le cours **baisse** (rare) |
-| **R² élevé** | Le sentiment explique bien le cours |
-| **R² faible** | Le sentiment explique peu (mais peut rester utile) |
-
----
-
-### ⚠️ Important : corrélation ≠ causalité
-
-Si p < 0.05, cela veut dire qu'il y a **une relation statistique**. Pas forcément que **A cause B**. Cela peut être :
-- Le sentiment cause le cours (hypothèse)
-- Le cours cause le sentiment (feedback)
-- Les deux sont causés par un 3ème facteur (économie, taux...)
+- **p < 0.05** ✅ = effet réel
+- **p > 0.05** ❌ = on ne peut pas conclure
         """)
 
-    # =======================================================
-    # RESULTATS
-    # =======================================================
     if not REG_OK:
         st.error(f"Module regression indisponible : {REG_ERROR}")
     else:
-        with st.spinner("Calcul de la regression..."):
+        with st.spinner("Calcul..."):
             reg_df, reg_output = load_regression()
 
         if reg_df is None:
-            st.warning("Pas assez de donnees pour la regression.")
+            st.warning("Pas assez de donnees.")
         else:
             results, events = reg_output
-            st.success(f"✅ Régression calculée sur **{len(reg_df)} observations** (news croisées avec les prix)")
-
-            # Cartes par horizon avec explication
-            st.markdown("### 🎯 Résultats par horizon")
+            st.success(f"Regression sur **{len(reg_df)} observations**")
 
             for horizon, r in results.items():
                 if "error" in r:
@@ -305,117 +400,23 @@ Si p < 0.05, cela veut dire qu'il y a **une relation statistique**. Pas forcéme
                     continue
 
                 sig = r["significant"]
-                color = "#27AE60" if sig else "#95A5A6"
-                bg = "#27AE6022" if sig else "#95A5A622"
-                sig_txt = "✅ SIGNIFICATIF" if sig else "❌ Non significatif"
+                sig_txt = "SIGNIFICATIF" if sig else "Non significatif"
 
-                with st.expander(
-                    f"{horizon} — Coefficient : {r['slope']:+.4f} — p-value : {r['p_value']:.4f} — {sig_txt}",
-                    expanded=sig
-                ):
+                with st.expander(f"{horizon} — Coef : {r['slope']:+.4f} — p : {r['p_value']:.4f} — {sig_txt}", expanded=sig):
                     col1, col2, col3, col4 = st.columns(4)
+                    col1.metric("Coefficient", f"{r['slope']:+.4f}")
+                    col2.metric("R2", f"{r['r_squared']:.4f}")
+                    col3.metric("P-value", f"{r['p_value']:.4f}")
+                    col4.metric("n", r["n"])
 
-                    col1.metric(
-                        "Coefficient",
-                        f"{r['slope']:+.4f}",
-                        help="Variation du rendement quand le sentiment augmente de +1.0"
-                    )
-                    col2.metric(
-                        "R²",
-                        f"{r['r_squared']:.4f}",
-                        help="% de la variation expliqué par le modèle (0 à 1)"
-                    )
-                    col3.metric(
-                        "P-value",
-                        f"{r['p_value']:.4f}",
-                        help="Probabilité que ce soit un hasard. < 0.05 = significatif"
-                    )
-                    col4.metric(
-                        "Observations",
-                        r["n"],
-                        help="Nombre de news analysées"
-                    )
-
-                    # Explication en langage naturel
                     if sig:
-                        direction = "augmente" if r["slope"] > 0 else "baisse"
-                        pct = r["slope"] * 100
-                        st.success(
-                            f"**📖 Lecture :** Quand le sentiment d'une news augmente de **+1.0**, "
-                            f"le cours de la banque **{direction}** en moyenne de **{pct:+.2f}%** "
-                            f"sur **{horizon}**. Cette relation est **fiable** "
-                            f"(seulement {r['p_value']*100:.2f}% de chance que ce soit un hasard)."
-                        )
+                        st.success(f"📖 Quand le sentiment +1.0 → le cours varie de **{r['slope']*100:+.2f}%** sur **{horizon}**.")
                     else:
-                        st.info(
-                            f"**📖 Lecture :** Aucune relation claire détectée à **{horizon}**. "
-                            f"Le coefficient est de {r['slope']:+.4f}, mais la p-value de "
-                            f"{r['p_value']:.4f} est **trop élevée** (> 0.05) → on ne peut pas "
-                            f"conclure que le sentiment influence le cours à cet horizon."
-                        )
+                        st.info(f"📖 Pas de relation significative a {horizon}.")
 
-                    # Petite explication R²
-                    if r["r_squared"] < 0.01:
-                        r2_txt = "très faible (le sentiment explique peu le cours)"
-                    elif r["r_squared"] < 0.05:
-                        r2_txt = "faible mais normal en finance"
-                    elif r["r_squared"] < 0.15:
-                        r2_txt = "bon pour de la finance"
-                    else:
-                        r2_txt = "excellent (rare en finance)"
-
-                    st.caption(f"💡 **R² = {r['r_squared']:.4f}** signifie que **{r['r_squared']*100:.2f}%** "
-                               f"de la variation du cours est expliquée par le sentiment → {r2_txt}.")
-
-            # =======================================================
-            # SYNTHESE GLOBALE
-            # =======================================================
             st.markdown("---")
-            st.markdown("### 📝 Synthèse globale")
-
-            # Compter les significatifs
-            sig_horizons = [h for h, r in results.items() if "error" not in r and r["significant"]]
-
-            if sig_horizons:
-                best_h = max(sig_horizons, key=lambda h: abs(results[h]["slope"]))
-                best = results[best_h]
-                direction = "haussier" if best["slope"] > 0 else "baissier"
-                st.success(
-                    f"### ✅ Résultat principal\n\n"
-                    f"Le sentiment des news **prédit significativement** le cours à **{best_h}**.\n\n"
-                    f"- **Effet** : {best['slope']*100:+.2f}% par unité de sentiment\n"
-                    f"- **Sens** : {direction}\n"
-                    f"- **Fiabilité** : p-value = {best['p_value']:.4f} ({'très fiable' if best['p_value'] < 0.01 else 'fiable'})\n"
-                    f"- **Échantillon** : {best['n']} observations\n\n"
-                    f"👉 **En clair** : quand une banque reçoit des news positives, "
-                    f"son cours a tendance à **{'monter' if best['slope'] > 0 else 'baisser'}** "
-                    f"sur un horizon de **{best_h}**."
-                )
-            else:
-                st.warning(
-                    "### ⚠️ Aucune relation significative détectée\n\n"
-                    "Sur cette période, le sentiment des news ne prédit pas clairement "
-                    "le cours des banques tunisiennes. C'est un résultat **honnête** : "
-                    "en finance, beaucoup de signaux ne sont pas statistiquement significatifs."
-                )
-
-            # =======================================================
-            # NUAGE DE POINTS
-            # =======================================================
-            st.markdown("---")
-            st.markdown("### 🔬 Visualisation : sentiment vs rendement")
-
-            st.markdown("""
-**Comment lire ce graphique :**
-- Chaque **point bleu** = une news
-- **Axe X** = sentiment de la news (négatif à gauche, positif à droite)
-- **Axe Y** = rendement du cours (en %) après la news
-- **Droite rouge** = la "meilleure droite" qui relie les deux (régression)
-- **Si la droite monte** → sentiment positif = rendement positif (✅ signal)
-- **Si la droite est plate** → aucun lien entre les deux
-            """)
-
-            horizon_choice = st.selectbox("Horizon à visualiser", ["J+1", "J+5", "J+20"], index=2)
+            st.markdown("### 🔬 Nuage de points")
+            horizon_choice = st.selectbox("Horizon", ["J+1", "J+5", "J+20"], index=2)
             h = int(horizon_choice.replace("J+", ""))
             target = f"ret_{h}"
 
@@ -425,105 +426,25 @@ Si p < 0.05, cela veut dire qu'il y a **une relation statistique**. Pas forcéme
                 y = sub_plot[target].values * 100
 
                 fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=x, y=y, mode="markers",
-                    marker=dict(size=6, color="#2E86DE", opacity=0.5),
-                    name="News",
-                    hovertemplate="Sentiment : %{x:+.2f}<br>Rendement : %{y:+.2f}%<extra></extra>",
-                ))
-
+                fig.add_trace(go.Scatter(x=x, y=y, mode="markers",
+                                          marker=dict(size=6, color="#2E86DE", opacity=0.5),
+                                          name="News"))
                 if len(x) > 1:
-                    slope, intercept, r_val, p_val, _ = stats.linregress(x, sub_plot[target].values)
+                    slope, intercept, _, _, _ = stats.linregress(x, sub_plot[target].values)
                     x_line = np.linspace(x.min(), x.max(), 50)
                     y_line = (slope * x_line + intercept) * 100
-                    fig.add_trace(go.Scatter(
-                        x=x_line, y=y_line, mode="lines",
-                        line=dict(color="#E74C3C", width=3),
-                        name=f"Régression (p={p_val:.4f})",
-                    ))
-
+                    fig.add_trace(go.Scatter(x=x_line, y=y_line, mode="lines",
+                                              line=dict(color="#E74C3C", width=3),
+                                              name="Regression"))
                 fig.add_hline(y=0, line_dash="dot", line_color="gray")
                 fig.add_vline(x=0, line_dash="dot", line_color="gray")
-                fig.update_layout(
-                    height=500,
-                    xaxis_title="Sentiment de la news",
-                    yaxis_title=f"Rendement du cours {horizon} (%)",
-                    hovermode="closest",
-                    margin=dict(l=10, r=10, t=30, b=10),
-                )
+                fig.update_layout(height=450,
+                                  xaxis_title="Sentiment",
+                                  yaxis_title=f"Rendement {horizon} (%)")
                 st.plotly_chart(fig, use_container_width=True)
 
-                # Stats résumées
-                r_simple = sub_plot["sentiment"].corr(sub_plot[target])
-                st.caption(
-                    f"**Corrélation de Pearson** : {r_simple:+.4f} — "
-                    f"interprétation : {'positive (sentiment ↑ → cours ↑)' if r_simple > 0.05 else ('négative' if r_simple < -0.05 else 'proche de zéro (pas de lien linéaire)')}"
-                )
-
-            # =======================================================
-            # ANALYSE PAR EVENEMENT
-            # =======================================================
-            st.markdown("---")
-            st.markdown("### 📊 Analyse par type d'événement")
-
-            st.markdown("""
-**Question** : est-ce que certains types de news ont **plus d'impact** que d'autres ?
-
-On a classé les news en catégories :
-- 📊 **resultats** : annonces de bénéfices, PNB, chiffre d'affaires
-- 💰 **dividende** : distributions aux actionnaires
-- ⚖️ **regulation** : décisions de la BCT, amendes, lois
-- 🌍 **macro** : inflation, taux, économie générale
-- 🤝 **fusion** : acquisitions, partenariats
-- 👔 **direction** : nominations, départs de dirigeants
-            """)
-
-            if len(events) > 0:
-                # Tableau enrichi
-                events_display = events.copy()
-                events_display["sentiment_moyen"] = events_display["sentiment_moyen"].round(3)
-                events_display["ret_1_moyen"] = (events_display["ret_1_moyen"] * 100).round(2)
-                events_display["ret_5_moyen"] = (events_display["ret_5_moyen"] * 100).round(2)
-                events_display["ret_20_moyen"] = (events_display["ret_20_moyen"] * 100).round(2)
-                events_display.columns = ["Événement", "Nb news", "Sentiment moyen",
-                                          "Rendement J+1 (%)", "Rendement J+5 (%)", "Rendement J+20 (%)"]
-
-                st.dataframe(events_display, use_container_width=True)
-
-                # Graphique
-                fig2 = go.Figure()
-                fig2.add_trace(go.Bar(
-                    x=events["event"],
-                    y=events["ret_20_moyen"] * 100,
-                    marker_color=["#27AE60" if v > 0 else "#E74C3C" for v in events["ret_20_moyen"]],
-                    text=[f"{v*100:+.2f}%" for v in events["ret_20_moyen"]],
-                    textposition="outside",
-                ))
-                fig2.add_hline(y=0, line_color="black", line_width=1)
-                fig2.update_layout(
-                    height=400,
-                    yaxis_title="Rendement moyen J+20 (%)",
-                    xaxis_title="Type d'événement",
-                    margin=dict(l=10, r=10, t=30, b=10),
-                )
-                st.plotly_chart(fig2, use_container_width=True)
-
-                # Insight
-                if len(events) > 0:
-                    top_event = events.iloc[0]
-                    st.info(
-                        f"💡 **Insight** : le type d'événement avec le **plus fort impact positif** "
-                        f"est **{top_event['event']}** (rendement moyen {top_event['ret_20_moyen']*100:+.2f}% à J+20 "
-                        f"sur {int(top_event['n'])} news)."
-                    )
-
-            st.caption(
-                "⚠️ Analyse statistique à but pédagogique. Corrélation n'implique pas causalité. "
-                "Ne constitue pas un conseil en investissement."
-            )
-
-# ===== ONGLET 6 =====
-with tab6:
+# ===== ONGLET 7 : CHATBOT =====
+with tab7:
     st.subheader("Chatbot banques tunisiennes")
     if not CHATBOT_OK:
         st.error(f"Chatbot indisponible : {CHAT_ERROR}")
@@ -548,7 +469,7 @@ with tab6:
                 st.markdown(answer)
                 st.session_state.messages.append({"role": "assistant", "content": answer})
 
-        if st.button("Effacer la conversation"):
+        if st.button("Effacer"):
             st.session_state.messages = []
             st.rerun()
 

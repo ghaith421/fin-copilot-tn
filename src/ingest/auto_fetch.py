@@ -50,23 +50,39 @@ def refresh_prices():
 
 
 def refresh_sentiment():
-    """Rafraichit le sentiment si necessaire."""
+    """Rafraichit le sentiment (mots-cles uniquement, rapide)."""
     path = f"{DATA_RAW}/banks_news_scored.parquet"
     news_path = f"{DATA_RAW}/banks_news.parquet"
 
-    # Si la news est plus recente que le sentiment, on rafraichit
     if os.path.exists(path) and os.path.exists(news_path):
         if os.path.getmtime(news_path) <= os.path.getmtime(path):
             print(f"[auto] Sentiment deja a jour")
             return False
 
-    print("[auto] Analyse du sentiment...")
+    print("[auto] Analyse du sentiment (mots-cles)...")
     try:
-        from src.nlp.sentiment_fr import score_news
-        score_news()
+        from src.nlp.sentiment_fr import score_news_keywords_only
+        score_news_keywords_only()
         return True
     except Exception as ex:
         print(f"[auto] Erreur sentiment : {ex}")
+        return False
+
+
+def refresh_history():
+    """Rafraichit l'historique des prix BVMT (1 fois par jour)."""
+    path = f"{DATA_RAW}/bvmt_history.parquet"
+    if not needs_refresh(path, max_age_minutes=24 * 60):  # 24 heures
+        print(f"[auto] Historique deja frais")
+        return False
+
+    print("[auto] Rafraichissement de l'historique des prix...")
+    try:
+        from src.ingest.bvmt_history import ingest_history
+        ingest_history()
+        return True
+    except Exception as ex:
+        print(f"[auto] Erreur historique : {ex}")
         return False
 
 
@@ -78,14 +94,18 @@ def auto_update_all():
 
     news_updated = refresh_news()
     prices_updated = refresh_prices()
+    history_updated = refresh_history()
 
-    if news_updated:
-        refresh_sentiment()
-    else:
-        refresh_sentiment()  # Pour gerer le cas ou news existe mais sentiment manquant
+    # Sentiment apres les news
+    sentiment_updated = refresh_sentiment()
 
     print("=" * 50)
-    return {"news": news_updated, "prices": prices_updated}
+    return {
+        "news": news_updated,
+        "prices": prices_updated,
+        "history": history_updated,
+        "sentiment": sentiment_updated,
+    }
 
 
 if __name__ == "__main__":
