@@ -3,228 +3,308 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 import pandas as pd
-import json
-import time
 import re
 import numpy as np
-from groq import Groq
-from config import DATA_RAW, GROQ_API_KEY
+from config import DATA_RAW
 
 # =========================================================
-# DICTIONNAIRES ENRICHIS
+# RACINES POSITIVES (elargies)
 # =========================================================
-POSITIVE_WORDS = {
+POSITIVE_STEMS = {
     # Croissance
-    "hausse": 1.0, "augmentation": 0.8, "croissance": 0.9, "progression": 0.9,
-    "amélioration": 0.8, "amelioration": 0.8, "accélération": 0.8, "acceleration": 0.8,
-    "expansion": 0.8, "essor": 0.8, "développement": 0.6, "developpement": 0.6,
-    "boost": 0.7, "rebond": 0.8, "surperform": 0.9, "surperforme": 0.8,
+    "hauss": 1.0, "augment": 0.8, "croiss": 0.9, "progress": 0.9,
+    "amélior": 0.8, "amelior": 0.8, "accélé": 0.8, "accele": 0.8,
+    "expans": 0.8, "essor": 0.8, "développ": 0.6, "developp": 0.6,
+    "boost": 0.7, "rebond": 0.8, "surperform": 0.9, "envol": 0.7,
     # Performance
     "record": 1.0, "excellent": 1.0, "performant": 0.9, "solide": 0.7,
-    "robuste": 0.6, "positif": 0.7, "favorable": 0.7, "optimiste": 0.7,
-    "bénéfice": 1.0, "benefice": 1.0, "profit": 0.9, "gains": 0.8,
-    "rentabilité": 0.9, "rentabilite": 0.9, "rentable": 0.8,
-    "dividende": 0.8, "rendement": 0.6,
-    # Succès
+    "robust": 0.6, "positif": 0.7, "favorab": 0.7, "optimis": 0.7,
+    "bénéfic": 1.0, "benefic": 1.0, "profit": 0.9, "gain": 0.8,
+    "rentab": 0.9, "dividend": 0.8, "rendement": 0.6,
+    # Succes
     "succès": 0.9, "succes": 0.9, "réussi": 0.8, "reussi": 0.8,
-    "victoire": 0.8, "gagnant": 0.7, "récompense": 0.7, "recompense": 0.7,
-    "meilleur": 0.7, "leader": 0.6, "premier": 0.5,
+    "victoire": 0.8, "gagn": 0.7, "récompens": 0.7, "recompens": 0.7,
+    "meilleur": 0.7, "leader": 0.6, "lauréat": 0.7, "laureat": 0.7,
+    "distingu": 0.5, "honor": 0.5,
     # Actions positives
-    "investissement": 0.5, "investir": 0.6, "partenariat": 0.6,
-    "acquisition": 0.7, "lancement": 0.5, "nouveau": 0.4,
-    "collaboration": 0.5, "accord": 0.5, "signature": 0.4,
-    "innovation": 0.7, "digitale": 0.4, "modernisation": 0.5,
-}
-
-NEGATIVE_WORDS = {
-    # Baisse
-    "baisse": -1.0, "diminution": -0.8, "chute": -1.0, "effondrement": -1.0,
-    "recul": -0.8, "dégradation": -0.9, "degradation": -0.9, "déclin": -0.8,
-    "declin": -0.8, "contraction": -0.7, "chute": -1.0,
-    # Pertes
-    "perte": -1.0, "pertes": -1.0, "déficit": -0.9, "deficit": -0.9,
-    "difficulté": -0.8, "difficulte": -0.8, "crise": -0.9,
-    "problème": -0.7, "probleme": -0.7, "risque": -0.6,
-    "sous-performe": -0.7, "faiblesse": -0.7, "fragile": -0.6,
-    "mal": -0.6, "pire": -0.7,
-    # Sanctions
-    "amende": -0.9, "sanction": -0.9, "pénalité": -0.9, "penalite": -0.9,
-    "condamnation": -1.0, "enquête": -0.7, "enquete": -0.7, "fraude": -1.0,
-    "scandale": -1.0, "litige": -0.7, "contentieux": -0.7,
-    "corruption": -1.0, "blanchiment": -1.0,
-    # Actions négatives
-    "avertissement": -0.7, "alerte": -0.6, "négatif": -0.7, "negatif": -0.7,
-    "défavorable": -0.7, "defavorable": -0.7, "pessimiste": -0.7,
-    "inquiétude": -0.7, "inquietude": -0.7,
-    "fermeture": -0.7, "licenciement": -0.8, "restructuration": -0.5,
-    "grève": -0.7, "greve": -0.7, "blocage": -0.7,
-    "démission": -0.6, "demission": -0.6,
-    "suspension": -0.7, "retrait": -0.6,
+    "investi": 0.5, "partenariat": 0.6, "acquisition": 0.7,
+    "lancement": 0.5, "innov": 0.7, "modernis": 0.5,
+    "levée": 0.6, "levee": 0.6, "distribution": 0.5,
+    "signature": 0.4, "conclu": 0.5, "obtien": 0.6,
+    "décroch": 0.7, "decroch": 0.7, "remport": 0.6,
+    "attribu": 0.5, "accordé": 0.5, "accorde": 0.5,
+    # Termes bancaires positifs
+    "solvab": 0.7, "capitalis": 0.6, "upgrad": 0.8,
+    "recouvr": 0.5, "assainissement": 0.6, "renforcement": 0.5,
+    "consolidation": 0.5, "redressement": 0.7, "restauration": 0.5,
+    # Verbes d'action
+    "annonce": 0.3, "publi": 0.3, "présent": 0.4, "present": 0.4,
+    "réalis": 0.5, "realis": 0.5, "attei": 0.6,
+    "dépass": 0.7, "depass": 0.7, "franchi": 0.5,
+    "confirme": 0.4, "réaffirme": 0.4, "reaffirme": 0.4,
+    "renforce": 0.5, "consolide": 0.5, "développe": 0.5, "developpe": 0.5,
+    "augmente": 0.8, "progresse": 0.8, "grimpe": 0.9, "avance": 0.6,
+    # Qualificatifs
+    "opportun": 0.6, "potentiel": 0.4, "prometteur": 0.7,
+    "avantage": 0.5, "compétiti": 0.5, "competiti": 0.5,
+    "excellence": 0.8, "prospèr": 0.8, "prosper": 0.8,
+    "floriss": 0.7, "sain": 0.5, "satisfais": 0.6,
+    "enrichi": 0.6, "valoris": 0.5, "apprécie": 0.7, "apprecie": 0.7,
 }
 
 # =========================================================
-# BIGRAMMES (expressions de 2 mots) - plus fiables
+# RACINES NEGATIVES (elargies)
+# =========================================================
+NEGATIVE_STEMS = {
+    # Baisse
+    "baiss": -1.0, "diminu": -0.8, "chut": -1.0, "effondr": -1.0,
+    "recul": -0.8, "dégrad": -0.9, "degrad": -0.9, "déclin": -0.8,
+    "declin": -0.8, "contract": -0.7, "affaiss": -0.7,
+    "plong": -0.9, "effrit": -0.6, "détérior": -0.9, "deterior": -0.9,
+    # Pertes
+    "perd": -1.0, "perte": -1.0, "déficit": -0.9, "deficit": -0.9,
+    "difficult": -0.8, "crise": -0.9, "problèm": -0.7, "problem": -0.7,
+    "risqu": -0.2, "faibl": -0.7, "fragil": -0.6, "pire": -0.7,
+    # Sanctions
+    "amend": -0.9, "sanction": -0.9, "pénal": -0.9, "penal": -0.9,
+    "condamn": -1.0, "enquêt": -0.7, "enquet": -0.7, "fraud": -1.0,
+    "scandal": -1.0, "litig": -0.7, "contentieu": -0.7,
+    "corrupt": -1.0, "blanch": -1.0, "suspect": -0.8,
+    "pénalis": -0.8, "penalis": -0.8, "assombri": -0.7,
+    # Avertissements
+    "averti": -0.7, "alerte": -0.6, "négat": -0.7, "negat": -0.7,
+    "défavorab": -0.7, "defavorab": -0.7, "pessimis": -0.7,
+    "inquiét": -0.7, "inquiet": -0.7, "fermetur": -0.7,
+    "licenci": -0.8, "restructur": -0.5, "grèv": -0.7, "grev": -0.7,
+    "blocag": -0.7, "démiss": -0.6, "demiss": -0.6,
+    "révoc": -0.6, "revoc": -0.6, "pesant": -0.5,
+    # Termes bancaires negatifs
+    "suspen": -0.7, "retrait": -0.6, "impay": -0.9,
+    "douteu": -0.8, "provision": -0.5, "dépréci": -0.7, "depreci": -0.7,
+    "défaut": -1.0, "defaut": -1.0, "insolvab": -1.0,
+    "illiquid": -0.8, "sous-capital": -0.8,
+    "downgrad": -0.9, "déclass": -0.8, "declass": -0.8,
+    "non-perform": -0.9, "recouvrement": -0.4,
+    "contraint": -0.5, "limitat": -0.5, "restrict": -0.5,
+    "désengage": -0.6, "desengage": -0.6, "cessation": -0.6, "cesser": -0.6,
+    "manqu": -0.7, "rate": -0.6, "affaibli": -0.7,
+    "préoccup": -0.7, "preoccup": -0.7, "menac": -0.7,
+    "bradé": -0.6, "brade": -0.6,
+    # Verbes d'echec
+    "déçoit": -0.8, "decoit": -0.8, "échoue": -0.9, "echoue": -0.9,
+    "annul": -0.8, "abandonn": -0.7,
+    "poursu": -0.6, "accus": -0.8, "assign": -0.7, "procès": -0.7, "proces": -0.7,
+    "fragilis": -0.6, "déstabil": -0.7, "destabil": -0.7,
+}
+
+# =========================================================
+# TERMES ANGLAIS
+# =========================================================
+POSITIVE_EN = {
+    "growth": 0.9, "increase": 0.8, "rise": 0.9, "gain": 0.8,
+    "profit": 0.9, "excellent": 1.0, "strong": 0.8,
+    "improve": 0.7, "boost": 0.7, "beat": 0.8, "surge": 0.9,
+    "outperform": 0.9, "dividend": 0.8, "upside": 0.7,
+    "win": 0.7, "award": 0.6, "leader": 0.6, "best": 0.7,
+    "outstanding": 0.8, "exceed": 0.7, "succeed": 0.7,
+}
+
+NEGATIVE_EN = {
+    "loss": -1.0, "losses": -1.0, "decline": -0.9, "fall": -0.9,
+    "drop": -0.9, "decrease": -0.8, "weak": -0.7, "miss": -0.7,
+    "concern": -0.6, "risk": -0.2, "warning": -0.7, "default": -1.0,
+    "downgrade": -0.9, "plunge": -1.0, "slump": -0.9,
+    "underperform": -0.8, "bankrupt": -1.0,
+    "penalty": -0.9, "sanction": -0.9, "lawsuit": -0.8,
+    "fraud": -1.0, "scandal": -1.0, "suspend": -0.7,
+    "problem": -0.7, "fail": -0.8,
+}
+
+# =========================================================
+# BIGRAMMES (elargis)
 # =========================================================
 POSITIVE_BIGRAMS = {
     "en hausse": 1.2, "en progression": 1.1, "en croissance": 1.2,
-    "en augmentation": 1.0, "en amélioration": 1.0,
+    "en augmentation": 1.0, "en amélioration": 1.0, "en amelioration": 1.0,
     "bon résultat": 1.1, "bons résultats": 1.2, "bons resultats": 1.2,
-    "bénéfice net": 1.0, "resultat net": 1.0, "résultat net": 1.0,
+    "bénéfice net": 1.0, "résultat net": 1.0, "resultat net": 1.0,
     "chiffre d'affaires": 0.6,
     "prise de participation": 0.7, "levée de fonds": 0.8, "levee de fonds": 0.8,
     "plan de développement": 0.7, "plan de developpement": 0.7,
-    "hausse du cours": 1.0, "hausse des bénéfices": 1.2, "hausse des benefices": 1.2,
-    "nouveau partenariat": 0.7, "nouvelle acquisition": 0.8,
-    "nouveau directeur": 0.5, "nouveau produit": 0.6,
-    "attention positive": 0.6, "perspective favorable": 0.8,
-    "amélioration significative": 1.0, "croissance soutenue": 1.1,
+    "hausse du cours": 1.0, "nouveau partenariat": 0.7,
+    "nouvelle acquisition": 0.8, "croissance soutenue": 1.1,
+    "hausse du pnb": 1.2, "résultat en hausse": 1.3, "resultat en hausse": 1.3,
+    "benefice en hausse": 1.3, "bénéfice en hausse": 1.3,
+    "prise de contrôle": 0.6, "signature d'accord": 0.7,
+    "amélioration de la": 0.8, "amelioration de la": 0.8,
+    "réduction des coûts": 0.6, "reduction des couts": 0.6,
+    "partage des risques": 0.4, "gestion des risques": 0.3,
+    "maitrise des risques": 0.5, "maîtrise des risques": 0.5,
+    "porte à 70": 0.3, "porte a 70": 0.3,
+    "porte à 100": 0.3, "porte a 100": 0.3,
+    "signe un partenariat": 0.6, "signe un accord": 0.6,
+    # Nouveaux
+    "hausse des dépôts": 0.8, "hausse des depots": 0.8,
+    "croissance du pnb": 1.2, "amélioration du résultat": 1.0,
+    "amélioration du resultat": 1.0,
+    "résultats solides": 1.1, "resultats solides": 1.1,
+    "performance solide": 1.0, "hausse de capital": 0.6,
+    "signature de convention": 0.5, "attribution de marché": 0.6,
+    "attribution de marche": 0.6,
+    "partenariat stratégique": 0.8, "partenariat strategique": 0.8,
+    "notation maintenue": 0.5, "perspectives positives": 0.8,
+    "nouvelle agence": 0.4, "ouverture de capital": 0.5,
+    "nouveau produit": 0.6, "nouveau service": 0.5,
+    "bien positionné": 0.5, "bien positionne": 0.5,
+    "position solide": 0.7, "solidité financière": 0.8,
+    "solidite financiere": 0.8,
+    "bénéfice en progression": 1.2, "benefice en progression": 1.2,
 }
 
 NEGATIVE_BIGRAMS = {
     "en baisse": -1.2, "en recul": -1.0, "en chute": -1.2,
     "en difficulté": -1.0, "en difficulte": -1.0, "en crise": -1.1,
-    "perte nette": -1.1, "resultat négatif": -1.0, "résultat négatif": -1.0,
-    "baisse du cours": -1.0, "baisse des bénéfices": -1.2, "baisse des benefices": -1.2,
-    "chute des crédits": -1.0, "chute des credits": -1.0,
-    "dégradation de la qualité": -1.0, "degradation de la qualite": -1.0,
+    "perte nette": -1.1, "résultat négatif": -1.0, "resultat negatif": -1.0,
+    "baisse du cours": -1.0, "baisse des bénéfices": -1.2,
     "créances douteuses": -0.9, "creances douteuses": -0.9,
-    "non-performing": -0.9, "npl": -0.8, "impayés": -0.9, "impayes": -0.9,
+    "loan losses": -1.0, "loan loss": -0.9,
+    "non-performing": -0.9, "non performing": -0.9,
     "amende de": -1.0, "sanction de": -0.9,
     "mise en cause": -0.7, "mise en examen": -0.9,
-    "démission du": -0.7, "demission du": -0.7,
-    "suspension de": -0.8, "retrait de": -0.7,
-    "avertissement de": -0.8, "alerte de": -0.7,
-    "faible performance": -0.8, "mauvaise performance": -0.9,
-    "perspective négative": -0.8, "perspective negative": -0.8,
+    "suspension de": -0.8, "faible performance": -0.8,
+    "dégradation de": -0.9, "degradation de": -0.9,
+    "chute des crédits": -1.0, "chute des credits": -1.0,
+    "baisse du pnb": -1.2, "résultat en baisse": -1.3, "resultat en baisse": -1.3,
+    "perte de confiance": -0.8, "retrait de licence": -1.0,
+    "mise sous tutelle": -1.0, "procédure collective": -1.0,
+    "problème de liquidité": -0.9, "probleme de liquidite": -0.9,
+    # Nouveaux
+    "baisse des dépôts": -0.8, "baisse des depots": -0.8,
+    "chute du pnb": -1.2, "dégradation du résultat": -1.0,
+    "degradation du resultat": -1.0,
+    "perte de marché": -0.8, "perte de marche": -0.8,
+    "avertissement de la bct": -1.0,
+    "mise en demeure": -0.9, "défaut de paiement": -1.0,
+    "defaut de paiement": -1.0, "cessation de paiement": -1.0,
+    "faible rentabilité": -0.8, "faible rentabilite": -0.8,
+    "chute des bénéfices": -1.2, "chute des benefices": -1.2,
+    "situation critique": -0.9, "situation préoccupante": -0.8,
+    "situation preoccupante": -0.8,
+    "baisse des résultats": -1.0, "baisse des resultats": -1.0,
+    "perte de clientèle": -0.7, "perte de clientele": -0.7,
 }
 
 # =========================================================
-# MOTS CONTEXTUELS
+# TRIGRAMMES
 # =========================================================
-# Ces mots n'ont pas de sentiment propre, mais renforcent un contexte
+POSITIVE_TRIGRAMS = {
+    "résultat en hausse": 1.3, "resultat en hausse": 1.3,
+    "bénéfice en hausse": 1.3, "benefice en hausse": 1.3,
+    "hausse du produit net": 1.3,
+    "hausse de 10": 0.8, "hausse de 20": 0.9,
+    "hausse de 30": 1.0, "hausse de 50": 1.1,
+    "croissance du produit net": 1.3,
+}
+
+NEGATIVE_TRIGRAMS = {
+    "résultat en baisse": -1.3, "resultat en baisse": -1.3,
+    "baisse de 10": -0.8, "baisse de 20": -0.9,
+    "baisse de 30": -1.0, "baisse de 50": -1.1,
+    "perte de confiance": -0.8,
+    "chute du résultat": -1.3, "chute du resultat": -1.3,
+    "défaut de paiement": -1.0, "defaut de paiement": -1.0,
+}
+
+# =========================================================
+# INTENSIFICATEURS
+# =========================================================
 INTENSIFIERS = {
-    "fortement": 1.3, "significativement": 1.3, "considerablement": 1.3,
-    "tres": 1.2, "très": 1.2, "extrêmement": 1.4, "extremement": 1.4,
-    "notablement": 1.2, "nettement": 1.2, "largement": 1.2,
-    "faiblement": 0.7, "legèrement": 0.7, "legerement": 0.7, "peu": 0.6,
+    "fortement": 1.3, "significativement": 1.3, "considérablement": 1.3,
+    "considerablement": 1.3, "très": 1.2, "tres": 1.2,
+    "extrêmement": 1.4, "extremement": 1.4, "notablement": 1.2,
+    "nettement": 1.2, "largement": 1.2, "faiblement": 0.7,
+    "légèrement": 0.7, "legerement": 0.7,
+    "totalement": 1.3, "entièrement": 1.2,
 }
-
-NEGATIONS = ["pas", "non", "aucun", "aucune", "sans", "jamais", "ni",
-             "ne", "n'", "point", "guère", "guere", "rien"]
-
-# Mots neutres (indiquent une news generale)
-NEUTRAL_KEYWORDS = [
-    "assemblee", "assemblée", "ag", "ago", "age",
-    "salon", "exposition", "conference", "conférence", "forum",
-    "interview", "communique", "communiqué", "declaration", "déclaration",
-    "reunion", "réunion", "seance", "séance", "visite",
-]
-
-EVENT_PATTERNS = {
-    "resultats": r"(résultat|resultat|résultats|resultats|bénéfice|benefice|pnb|bilan|chiffre)",
-    "dividende": r"(dividende|distribution|assemblee generale|assemblée générale|AGO)",
-    "regulation": r"(BCT|banque centrale|régulation|regulation|loi|décret|decret|amende|sanction)",
-    "macro": r"(inflation|taux|BCE|FED|économie|economie|croissance du PIB|chômage|chomage)",
-    "fusion": r"(fusion|acquisition|OPA|partenariat|rachat)",
-    "direction": r"(directeur|PDG|DG|président|president|nomination|démission|demission)",
-    "npl": r"(creance|créance|impaye|impayé|npl|non.performing|douteux)",
-}
-
-SOURCE_WEIGHTS = {
-    "reuters": 1.5, "bloomberg": 1.5, "afp": 1.5,
-    "ilboursa": 1.2, "tustex": 1.2, "lapresse": 1.2, "businessnews": 1.2,
-    "yahoo": 1.0, "cnbc": 1.0, "marketwatch": 1.0,
-    "google_news": 1.0,
-}
-
-MODEL_LLAMA = "openai/gpt-oss-20b"
-BATCH_SIZE = 10
-SLEEP_BETWEEN_BATCHES = 6
-
 
 # =========================================================
-# SCORING ENRICHI
+# NEGATIONS et BLACKLIST
 # =========================================================
-def extract_numbers_sentiment(text):
-    """Detecte les nombres avec +/- pour un signal."""
-    score = 0.0
-    text_lower = text.lower()
+NEGATIONS = {"pas", "non", "aucun", "aucune", "sans", "jamais",
+             "ni", "ne", "n'", "point", "guère", "guere", "rien"}
 
-    # Chercher +X% ou -X%
-    # Ex: "+5.2%", "+12 %", "-3.4%"
-    plus_matches = re.findall(r"\+\s*(\d+[.,]?\d*)\s*%", text_lower)
-    minus_matches = re.findall(r"-\s*(\d+[.,]?\d*)\s*%", text_lower)
+BLACKLIST = {
+    "amen", "biat", "atb", "uib", "bna", "bh", "stb", "bt", "bte",
+    "ubci", "wifak", "zitouna", "attijari", "tunindex", "tunisie",
+    "tunis", "banque", "bank", "bancaire", "bvmt", "bourse",
+    "action", "actions", "marche", "marches", "cours",
+    "cette", "leurs", "notre", "votre",
+}
 
-    for m in plus_matches:
-        v = float(m.replace(",", "."))
-        score += min(v / 20, 1.0)  # +20% = +1.0
-    for m in minus_matches:
-        v = float(m.replace(",", "."))
-        score -= min(v / 20, 1.0)
-
-    # Mots "hausse de X%" / "baisse de X%"
-    hausse_match = re.findall(r"hausse\s+de\s+(\d+[.,]?\d*)\s*%", text_lower)
-    baisse_match = re.findall(r"baisse\s+de\s+(\d+[.,]?\d*)\s*%", text_lower)
-
-    for m in hausse_match:
-        v = float(m.replace(",", "."))
-        score += min(v / 15, 1.0)
-    for m in baisse_match:
-        v = float(m.replace(",", "."))
-        score -= min(v / 15, 1.0)
-
-    return score
+# =========================================================
+# MATCHING
+# =========================================================
+def match_stem(word, stem_dict):
+    for stem, weight in stem_dict.items():
+        if len(stem) >= 4 and stem in word:
+            return weight
+    return 0.0
 
 
 def keyword_sentiment_enriched(text):
-    """
-    Scoring enrichi :
-    1. Mots simples
-    2. Bigrammes
-    3. Negations
-    4. Intensificateurs
-    5. Nombres +/-
-    """
     text = (text or "").strip()
     text_lower = text.lower()
     words = re.findall(r"\b[\w']+\b", text_lower)
 
     score = 0.0
     matches = 0
-    signals = []
 
-    # ---- 1. BIGRAMMES (priorite haute) ----
+    for tg, weight in POSITIVE_TRIGRAMS.items():
+        if tg in text_lower:
+            score += weight
+            matches += 1
+    for tg, weight in NEGATIVE_TRIGRAMS.items():
+        if tg in text_lower:
+            score += weight
+            matches += 1
+
     for bg, weight in POSITIVE_BIGRAMS.items():
         count = text_lower.count(bg)
         if count > 0:
             score += weight * min(count, 2)
             matches += count
-            signals.append(f"+bg:{bg}")
-
     for bg, weight in NEGATIVE_BIGRAMS.items():
         count = text_lower.count(bg)
         if count > 0:
             score += weight * min(count, 2)
             matches += count
-            signals.append(f"-bg:{bg}")
 
-    # ---- 2. MOTS SIMPLES avec negation + intensificateur ----
     for i, word in enumerate(words):
-        weight = 0.0
-        if word in POSITIVE_WORDS:
-            weight = POSITIVE_WORDS[word]
-        elif word in NEGATIVE_WORDS:
-            weight = NEGATIVE_WORDS[word]
-        else:
+        if word in BLACKLIST:
             continue
 
-        # Verifier negation (4 mots avant)
+        weight = match_stem(word, POSITIVE_STEMS)
+        if weight == 0.0:
+            weight = match_stem(word, NEGATIVE_STEMS)
+        if weight == 0.0 and len(word) >= 4:
+            for en_stem, w in POSITIVE_EN.items():
+                if en_stem in word or word in en_stem:
+                    weight = w
+                    break
+        if weight == 0.0 and len(word) >= 4:
+            for en_stem, w in NEGATIVE_EN.items():
+                if en_stem in word or word in en_stem:
+                    weight = w
+                    break
+
+        if weight == 0.0:
+            continue
+
         context = words[max(0, i - 4):i]
-        has_neg = any(n in " ".join(context) for n in NEGATIONS)
+        has_neg = any(w in NEGATIONS for w in context)
         if has_neg:
             weight = -weight
 
-        # Verifier intensificateur (2 mots avant)
         intens_context = words[max(0, i - 2):i]
         for w in intens_context:
             if w in INTENSIFIERS:
@@ -234,23 +314,31 @@ def keyword_sentiment_enriched(text):
         score += weight
         matches += 1
 
-    # ---- 3. NOMBRES +/- ----
-    num_score = extract_numbers_sentiment(text)
-    if abs(num_score) > 0.01:
-        score += num_score
+    plus_matches = re.findall(r"\+\s*(\d+[.,]?\d*)\s*%", text_lower)
+    minus_matches = re.findall(r"-\s*(\d+[.,]?\d*)\s*%", text_lower)
+    for m in plus_matches:
+        score += min(float(m.replace(",", ".")) / 20, 1.0)
+        matches += 1
+    for m in minus_matches:
+        score -= min(float(m.replace(",", ".")) / 20, 1.0)
         matches += 1
 
-    # ---- 4. NEUTRALITE (assemblee, salon, etc.) ----
-    is_neutral = any(kw in text_lower for kw in NEUTRAL_KEYWORDS)
-    if is_neutral and matches == 0:
-        return 0.0, 0, ["neutral"]
-
-    # ---- Normalisation ----
     if matches == 0:
-        return 0.0, 0, []
+        return 0.0, 0
 
     normalized = score / (matches ** 0.5 + 0.5)
-    return float(np.clip(normalized, -1.0, 1.0)), matches, signals
+    return float(np.clip(normalized, -1.0, 1.0)), matches
+
+
+EVENT_PATTERNS = {
+    "resultats": r"(résultat|resultat|résultats|resultats|bénéfice|benefice|pnb|bilan|chiffre)",
+    "dividende": r"(dividende|distribution|assemblee generale|assemblée générale|AGO)",
+    "regulation": r"(BCT|banque centrale|régulation|regulation|loi|décret|decret|amende|sanction)",
+    "macro": r"(inflation|taux|BCE|FED|économie|economie|chômage|chomage)",
+    "fusion": r"(fusion|acquisition|OPA|partenariat|rachat)",
+    "direction": r"(directeur|PDG|DG|président|president|nomination|démission|demission)",
+    "npl": r"(creance|créance|impaye|impayé|npl|non.performing|douteux|loan.loss)",
+}
 
 
 def detect_event(text):
@@ -268,88 +356,25 @@ def impact_from_score(score):
     return "neutre"
 
 
-def source_weight(source):
-    if not source:
-        return 1.0
-    s = str(source).lower()
-    for key, w in SOURCE_WEIGHTS.items():
-        if key in s:
-            return w
-    return 0.8
-
-
-# =========================================================
-# LLAMA PAR BATCH
-# =========================================================
-def llama_batch(client, news_list):
-    items_text = ""
-    for i, (title, summary) in enumerate(news_list):
-        items_text += f"\n--- NEWS {i+1} ---\nTitre: {title}\nResume: {summary[:150]}\n"
-
-    prompt = f"""Analyse ces {len(news_list)} news bancaires tunisiennes.
-
-Pour CHAQUE news, donne un sentiment entre -1 (tres negatif) et +1 (tres positif).
-- Neutre/banale → 0.0
-- Positive → entre +0.1 et +1
-- Negative → entre -1 et -0.1
-
-Reponds UNIQUEMENT en JSON valide avec ce format :
-{{"results": [
-  {{"id": 1, "sentiment": 0.5, "raison": "..."}},
-  ...
-]}}
-
-{items_text}"""
-
-    try:
-        r = client.chat.completions.create(
-            model=MODEL_LLAMA,
-            messages=[
-                {"role": "system", "content": "Tu es un analyste financier. Reponds UNIQUEMENT en JSON valide."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.2,
-            max_tokens=2000,
-            response_format={"type": "json_object"},
-        )
-        data = json.loads(r.choices[0].message.content)
-        results = data.get("results", [])
-        results = sorted(results, key=lambda x: x.get("id", 0))
-        return [
-            {"sentiment": float(r.get("sentiment", 0)), "raison": r.get("raison", "")[:100]}
-            for r in results
-        ]
-    except Exception as ex:
-        print(f"    [erreur batch] {str(ex)[:80]}")
-        return [{"sentiment": 0.0, "raison": ""} for _ in news_list]
-
-
-# =========================================================
-# PIPELINE
-# =========================================================
 def score_news_keywords_only():
-    """Version rapide : scoring enrichi (mots-cles + bigrammes + contexte)."""
     path = f"{DATA_RAW}/banks_news.parquet"
     df = pd.read_parquet(path).reset_index(drop=True)
-    print(f"[sentiment-kw] {len(df)} news")
+    print(f"[sentiment] {len(df)} news a analyser")
 
     sentiments = []
     matches_list = []
     events = []
-    signals_list = []
 
     for _, row in df.iterrows():
         text = (row["title"] or "") + ". " + (row.get("summary", "") or "")
-        s, m, sig = keyword_sentiment_enriched(text)
+        s, m = keyword_sentiment_enriched(text)
         sentiments.append(s)
         matches_list.append(m)
         events.append(detect_event(text))
-        signals_list.append(",".join(sig[:3]))
 
     df["sentiment_kw"] = sentiments
     df["sentiment"] = sentiments
     df["kw_matches"] = matches_list
-    df["kw_signals"] = signals_list
     df["event_type"] = events
     df["impact"] = df["sentiment"].apply(impact_from_score)
 
@@ -357,97 +382,12 @@ def score_news_keywords_only():
     df.to_parquet(out)
 
     n_nonzero = (df["sentiment"] != 0).sum()
-    print(f"[sentiment-kw] Sentiment moyen : {df['sentiment'].mean():+.3f}")
-    print(f"[sentiment-kw] News avec sentiment != 0 : {n_nonzero} / {len(df)}")
-    print("\nPar banque :")
-    print(df.groupby("tickers")["sentiment"].agg(["mean", "count"]).round(3))
-    return df
-
-
-def score_news():
-    """Pipeline complet : enrichi + Llama par batch."""
-    path = f"{DATA_RAW}/banks_news.parquet"
-    df = pd.read_parquet(path).reset_index(drop=True)
-    print(f"[sentiment] {len(df)} news")
-
-    print("\n[sentiment] === ETAPE 1 : Scoring enrichi (mots-cles + bigrammes) ===")
-    sentiments = []
-    matches_list = []
-    events = []
-    for _, row in df.iterrows():
-        text = (row["title"] or "") + ". " + (row.get("summary", "") or "")
-        s, m, _ = keyword_sentiment_enriched(text)
-        sentiments.append(s)
-        matches_list.append(m)
-        events.append(detect_event(text))
-
-    df["sentiment_kw"] = sentiments
-    df["kw_matches"] = matches_list
-    df["event_type"] = events
-    df["source_weight"] = df["source"].apply(source_weight) if "source" in df.columns else 1.0
-
-    n_nonzero = (df["sentiment_kw"] != 0).sum()
-    print(f"  News avec sentiment != 0 : {n_nonzero} / {len(df)}")
-    print(f"  News sans signal : {(df['sentiment_kw'] == 0).sum()}")
-
-    # Llama sur les news faibles
-    needs_llama_mask = df["sentiment_kw"].abs() < 0.3
-    needs_llama = df[needs_llama_mask].copy().reset_index(drop=True)
-
-    if len(needs_llama) > 0 and GROQ_API_KEY:
-        print(f"\n[sentiment] === ETAPE 2 : Llama sur {len(needs_llama)} news faibles ===")
-        client = Groq(api_key=GROQ_API_KEY)
-        all_scores = []
-        all_raisons = []
-
-        n_batches = (len(needs_llama) + BATCH_SIZE - 1) // BATCH_SIZE
-        for b in range(n_batches):
-            start = b * BATCH_SIZE
-            end = min(start + BATCH_SIZE, len(needs_llama))
-            batch_df = needs_llama.iloc[start:end]
-            news_list = [(row["title"], row.get("summary", "")) for _, row in batch_df.iterrows()]
-            results = llama_batch(client, news_list)
-            while len(results) < len(news_list):
-                results.append({"sentiment": 0.0, "raison": ""})
-            for r in results[:len(news_list)]:
-                all_scores.append(r["sentiment"])
-                all_raisons.append(r["raison"])
-            print(f"    Batch {b+1}/{n_batches} : {end}/{len(needs_llama)}")
-            time.sleep(SLEEP_BETWEEN_BATCHES)
-
-        needs_llama["sentiment_llama"] = all_scores
-        needs_llama["raison"] = all_raisons
-        df = df.merge(needs_llama[["title", "sentiment_llama", "raison"]], on="title", how="left")
-    else:
-        df["sentiment_llama"] = None
-        df["raison"] = ""
-
-    def final_score(row):
-        kw = row["sentiment_kw"]
-        ll = row.get("sentiment_llama")
-        if pd.notna(ll) and abs(kw) < 0.3:
-            return float(np.clip(0.3 * kw + 0.7 * ll, -1, 1))
-        return float(np.clip(kw, -1, 1))
-
-    df["sentiment"] = df.apply(final_score, axis=1)
-    df["impact"] = df["sentiment"].apply(impact_from_score)
-
-    out = f"{DATA_RAW}/banks_news_scored.parquet"
-    df.to_parquet(out)
-    print(f"\n[sentiment] Sauvegarde -> {out}")
-
-    print("\n" + "=" * 50)
-    print("STATISTIQUES")
-    print("=" * 50)
-    print(f"Sentiment moyen : {df['sentiment'].mean():+.3f}")
-    print(f"News avec sentiment != 0 : {(df['sentiment'] != 0).sum()} / {len(df)}")
+    print(f"[sentiment] Sentiment moyen : {df['sentiment'].mean():+.3f}")
+    print(f"[sentiment] News avec sentiment != 0 : {n_nonzero} / {len(df)} ({100*n_nonzero/len(df):.1f}%)")
     print("\nPar banque :")
     print(df.groupby("tickers")["sentiment"].agg(["mean", "count"]).round(3))
     return df
 
 
 if __name__ == "__main__":
-    if "--keywords-only" in sys.argv:
-        score_news_keywords_only()
-    else:
-        score_news()
+    score_news_keywords_only()
