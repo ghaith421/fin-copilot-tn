@@ -1,9 +1,10 @@
 name: Mise a jour automatique
 
 on:
-  # Toutes les heures (minute 15)
+  # 2 fois par heure : minute 15 et minute 45
   schedule:
     - cron: '15 * * * *'
+    - cron: '45 * * * *'
   # Bouton manuel
   workflow_dispatch:
 
@@ -40,6 +41,16 @@ jobs:
 
       - name: Analyze sentiment (mots-cles seulement)
         run: python -m src.nlp.sentiment_fr --keywords-only
+        continue-on-error: true
+
+      - name: Fetch history (1x par jour)
+        run: |
+          if [ $(date +%H) -eq 14 ]; then
+            python -m src.ingest.bvmt_history
+            python -m src.analysis.bank_index
+          else
+            echo "Skip - uniquement a 14h"
+          fi
         continue-on-error: true
 
       - name: Commit and push
