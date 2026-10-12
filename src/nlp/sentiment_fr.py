@@ -6,53 +6,46 @@ import pandas as pd
 import json
 import time
 import re
+import numpy as np
 from groq import Groq
 from config import DATA_RAW, GROQ_API_KEY
 
 # =========================================================
-# 1) DICTIONNAIRES DE MOTS-CLES FINANCIERS
+# DICTIONNAIRES
 # =========================================================
 POSITIVE_WORDS = {
-    # Croissance / performance
     "hausse": 1.0, "augmentation": 0.8, "croissance": 0.9, "progression": 0.9,
     "record": 1.0, "excellent": 1.0, "performant": 0.9, "amélioration": 0.8,
     "amelioration": 0.8, "accélération": 0.8, "acceleration": 0.8,
-    # Résultats
     "bénéfice": 1.0, "benefice": 1.0, "profit": 0.9, "gains": 0.8,
     "dividende": 0.8, "rendement": 0.6, "rentabilité": 0.9, "rentabilite": 0.9,
-    # Expansion
     "expansion": 0.8, "investissement": 0.5, "partenariat": 0.6,
     "acquisition": 0.7, "nouveau": 0.4, "lancement": 0.5,
-    # Succès
     "succès": 0.9, "succes": 0.9, "réussi": 0.8, "reussi": 0.8,
     "positif": 0.7, "favorable": 0.7, "optimiste": 0.7,
     "surperforme": 0.8, "solide": 0.7, "robuste": 0.6,
-    # Prix
     "rebond": 0.8, "appréciation": 0.7, "appreciation": 0.7,
 }
 
 NEGATIVE_WORDS = {
-    # Baisse / pertes
     "baisse": -1.0, "diminution": -0.8, "chute": -1.0, "effondrement": -1.0,
     "perte": -1.0, "pertes": -1.0, "déficit": -0.9, "deficit": -0.9,
     "recul": -0.8, "dégradation": -0.9, "degradation": -0.9,
-    # Sanctions
     "amende": -0.9, "sanction": -0.9, "pénalité": -0.9, "penalite": -0.9,
     "condamnation": -1.0, "enquête": -0.7, "enquete": -0.7, "fraude": -1.0,
     "scandale": -1.0, "litige": -0.7, "contentieux": -0.7,
-    # Difficultés
     "difficulté": -0.8, "difficulte": -0.8, "crise": -0.9,
     "problème": -0.7, "probleme": -0.7, "risque": -0.6,
     "avertissement": -0.7, "alerte": -0.6,
-    # Négatif
     "négatif": -0.7, "negatif": -0.7, "défavorable": -0.7, "defavorable": -0.7,
     "pessimiste": -0.7, "inquiétude": -0.7, "inquietude": -0.7,
-    # Autres
     "fermeture": -0.7, "licenciement": -0.8, "restructuration": -0.5,
     "sous-performe": -0.7, "faiblesse": -0.7, "fragile": -0.6,
 }
 
-# Types d'evenements (regex)
+NEGATIONS = ["pas", "non", "aucun", "aucune", "sans", "jamais", "ni",
+             "ne", "n'", "point", "guère", "guere"]
+
 EVENT_PATTERNS = {
     "resultats": r"(résultat|resultat|résultats|resultats|bénéfice|benefice|chiffre d'affaires|pnb|bilan)",
     "dividende": r"(dividende|distribution|assemblee generale|assemblée générale|AGO|AG)",
@@ -62,36 +55,57 @@ EVENT_PATTERNS = {
     "direction": r"(directeur|PDG|DG|président|president|nomination|démission|demission)",
 }
 
+SOURCE_WEIGHTS = {
+    "reuters": 1.5, "bloomberg": 1.5, "afp": 1.5,
+    "ilboursa": 1.2, "tustex": 1.2, "lapresse": 1.2, "businessnews": 1.2,
+    "yahoo": 1.0, "cnbc": 1.0, "marketwatch": 1.0,
+    "google_news": 1.0, "investing": 1.0,
+    "seekingalpha": 0.9, "reddit": 0.5,
+}
 
+
+# =========================================================
+# FONCTIONS
+# =========================================================
 def keyword_sentiment(text):
-    """Calcule un sentiment par mots-cles."""
-    text_lower = text.lower()
+    """Sentiment par mots-cles avec detection de negation."""
+    text_lower = (text or "").lower()
+    words = re.findall(r"\b\w+\b", text_lower)
+
+    if not words:
+        return 0.0
+
     score = 0.0
     matches = 0
 
-    for word, weight in POSITIVE_WORDS.items():
-        count = text_lower.count(word)
-        if count > 0:
-            score += weight * min(count, 3)
-            matches += count
+    for i, word in enumerate(words):
+        weight = 0.0
+        if word in POSITIVE_WORDS:
+            weight = POSITIVE_WORDS[word]
+        elif word in NEGATIVE_WORDS:
+            weight = NEGATIVE_WORDS[word]
+        else:
+            continue
 
-    for word, weight in NEGATIVE_WORDS.items():
-        count = text_lower.count(word)
-        if count > 0:
-            score += weight * min(count, 3)
-            matches += count
+        context = words[max(0, i - 4):i]
+        has_negation = any(neg in " ".join(context) for neg in NEGATIONS)
 
-    # Normaliser entre -1 et +1
+        if has_negation:
+            weight = -weight
+
+        score += weight
+        matches += 1
+
     if matches == 0:
         return 0.0
+
     normalized = score / (matches ** 0.5 + 1)
     return max(-1.0, min(1.0, normalized))
 
 
 def detect_event(text):
-    """Detecte le type d'evenement."""
     for event, pattern in EVENT_PATTERNS.items():
-        if re.search(pattern, text, re.IGNORECASE):
+        if re.search(pattern, text or "", re.IGNORECASE):
             return event
     return "autre"
 
@@ -104,19 +118,37 @@ def impact_from_score(score):
     return "neutre"
 
 
-# =========================================================
-# 2) LLAMA (uniquement pour les news fortes)
-# =========================================================
-MODEL_LLAMA = "llama-3.1-8b-instant"  # modele leger = moins de tokens
-SLEEP_LLAMA = 4.5  # secondes (13 req/min, sous la limite)
+def source_weight(source):
+    if not source:
+        return 1.0
+    s = str(source).lower()
+    for key, w in SOURCE_WEIGHTS.items():
+        if key in s:
+            return w
+    return 0.8
+
+
+def recency_weight(date_val):
+    """Poids de recence (1.0 aujourd'hui, decroit sur 60j)."""
+    try:
+        d = pd.to_datetime(date_val).tz_localize(None)
+        age_days = (pd.Timestamp.now() - d).days
+        if age_days < 0:
+            return 1.0
+        # Decroissance plus douce sur 60 jours (au lieu de 30)
+        return float(max(0.3, np.exp(-age_days / 60.0)))
+    except Exception:
+        return 1.0
+
+
+MODEL_LLAMA = "openai/gpt-oss-20b"
+SLEEP_LLAMA = 4.5
 
 
 def llama_sentiment(client, title, summary=""):
-    """Sentiment par Llama (modele leger)."""
     text = f"Titre : {title}\nResume : {summary[:200]}"
-    prompt = """Analyse cette news bancaire. Reponds en JSON :
+    prompt = """Analyse cette news bancaire tunisienne. Reponds UNIQUEMENT en JSON :
 {"sentiment": -1.0, "raison": "explication courte"}"""
-
     try:
         r = client.chat.completions.create(
             model=MODEL_LLAMA,
@@ -135,97 +167,10 @@ def llama_sentiment(client, title, summary=""):
 
 
 # =========================================================
-# 3) PIPELINE
+# PIPELINE
 # =========================================================
-def score_news():
-    path = f"{DATA_RAW}/banks_news.parquet"
-    df = pd.read_parquet(path).reset_index(drop=True)
-    print(f"[sentiment] {len(df)} news a analyser")
-
-    # -------- Etape 1 : analyse par mots-cles (instantanee) --------
-    print("\n[sentiment] === ETAPE 1 : Mots-cles ===")
-    kw_sentiments = []
-    events = []
-
-    for _, row in df.iterrows():
-        text = (row["title"] or "") + " " + (row.get("summary", "") or "")
-        kw_sentiments.append(keyword_sentiment(text))
-        events.append(detect_event(text))
-
-    df["sentiment_kw"] = kw_sentiments
-    df["event_type"] = events
-    df["impact"] = df["sentiment_kw"].apply(impact_from_score)
-
-    print(f"  Positifs (kw > +0.2) : {(df['sentiment_kw'] > 0.2).sum()}")
-    print(f"  Negatifs (kw < -0.2) : {(df['sentiment_kw'] < -0.2).sum()}")
-    print(f"  Neutres              : {((df['sentiment_kw'] >= -0.2) & (df['sentiment_kw'] <= 0.2)).sum()}")
-
-    # -------- Etape 2 : Llama sur les news fortes --------
-    print("\n[sentiment] === ETAPE 2 : Llama sur les news fortes ===")
-    strong_mask = df["sentiment_kw"].abs() > 0.3
-    strong_df = df[strong_mask].copy()
-    print(f"  {len(strong_df)} news fortes a verifier par Llama")
-
-    if len(strong_df) > 0 and GROQ_API_KEY:
-        client = Groq(api_key=GROQ_API_KEY)
-        llama_scores = []
-        llama_raisons = []
-
-        for i, (_, row) in enumerate(strong_df.iterrows()):
-            score, raison = llama_sentiment(client, row["title"], row.get("summary", ""))
-            llama_scores.append(score)
-            llama_raisons.append(raison)
-            if (i + 1) % 10 == 0:
-                print(f"    {i+1}/{len(strong_df)} validees")
-            time.sleep(SLEEP_LLAMA)
-
-        strong_df["sentiment_llama"] = llama_scores
-        strong_df["raison"] = llama_raisons
-
-        # Fusionner
-        df = df.merge(
-            strong_df[["title", "sentiment_llama", "raison"]],
-            on="title", how="left"
-        )
-    else:
-        df["sentiment_llama"] = None
-        df["raison"] = ""
-
-    # -------- Sentiment final : moyenne ponderee --------
-    def final_score(row):
-        kw = row["sentiment_kw"]
-        ll = row.get("sentiment_llama")
-        if pd.notna(ll):
-            return 0.4 * kw + 0.6 * ll
-        return kw
-
-    df["sentiment"] = df.apply(final_score, axis=1)
-    df["impact"] = df["sentiment"].apply(impact_from_score)
-
-    # -------- Sauvegarde --------
-    out = f"{DATA_RAW}/banks_news_scored.parquet"
-    df.to_parquet(out)
-    print(f"\n[sentiment] Sauvegarde -> {out}")
-
-    # -------- Stats --------
-    print("\n" + "="*50)
-    print("STATISTIQUES FINALES")
-    print("="*50)
-    print(f"Sentiment moyen : {df['sentiment'].mean():+.3f}")
-    print(f"  Positifs : {(df['sentiment'] > 0.2).sum()}")
-    print(f"  Negatifs : {(df['sentiment'] < -0.2).sum()}")
-    print(f"  Neutres  : {((df['sentiment'] >= -0.2) & (df['sentiment'] <= 0.2)).sum()}")
-
-    print("\nPar banque :")
-    print(df.groupby("tickers")["sentiment"].agg(["mean", "count"]).round(3))
-
-    print("\nTypes d'evenements :")
-    print(df["event_type"].value_counts())
-
-    return df
-
 def score_news_keywords_only():
-    """Version rapide : mots-cles uniquement (pas d'API)."""
+    """Version rapide : mots-cles + poids stockes separement."""
     path = f"{DATA_RAW}/banks_news.parquet"
     df = pd.read_parquet(path).reset_index(drop=True)
     print(f"[sentiment-kw] {len(df)} news a analyser")
@@ -238,17 +183,106 @@ def score_news_keywords_only():
         events.append(detect_event(text))
 
     df["sentiment_kw"] = kw_sentiments
-    df["sentiment"] = kw_sentiments
     df["event_type"] = events
+
+    # Les poids sont STOCKES mais PAS appliques au sentiment individuel
+    df["source_weight"] = df["source"].apply(source_weight) if "source" in df.columns else 1.0
+    df["recency_weight"] = df["date"].apply(recency_weight) if "date" in df.columns else 1.0
+
+    # Le sentiment individuel reste BRUT (avec negation)
+    df["sentiment"] = df["sentiment_kw"]
     df["impact"] = df["sentiment"].apply(impact_from_score)
 
     out = f"{DATA_RAW}/banks_news_scored.parquet"
     df.to_parquet(out)
     print(f"[sentiment-kw] Sauvegarde -> {out}")
-    print(f"Sentiment moyen : {df['sentiment'].mean():+.3f}")
+    print(f"[sentiment-kw] Sentiment moyen : {df['sentiment'].mean():+.3f}")
+
+    print("\nSentiment moyen pondere par banque (avec source + recence) :")
+    for bank in df["tickers"].unique():
+        sub = df[df["tickers"] == bank]
+        if len(sub) == 0:
+            continue
+        weights = sub["source_weight"] * sub["recency_weight"]
+        if weights.sum() > 0:
+            weighted_avg = (sub["sentiment"] * weights).sum() / weights.sum()
+        else:
+            weighted_avg = sub["sentiment"].mean()
+        print(f"  {bank} : {weighted_avg:+.3f}  (simple: {sub['sentiment'].mean():+.3f}, n={len(sub)})")
+
     return df
+
+
+def score_news():
+    path = f"{DATA_RAW}/banks_news.parquet"
+    df = pd.read_parquet(path).reset_index(drop=True)
+    print(f"[sentiment] {len(df)} news a analyser")
+
+    print("\n[sentiment] === ETAPE 1 : Mots-cles + negation ===")
+    kw_sentiments = []
+    events = []
+    for _, row in df.iterrows():
+        text = (row["title"] or "") + " " + (row.get("summary", "") or "")
+        kw_sentiments.append(keyword_sentiment(text))
+        events.append(detect_event(text))
+
+    df["sentiment_kw"] = kw_sentiments
+    df["event_type"] = events
+    df["source_weight"] = df["source"].apply(source_weight) if "source" in df.columns else 1.0
+    df["recency_weight"] = df["date"].apply(recency_weight) if "date" in df.columns else 1.0
+
+    print(f"  Positifs (kw > +0.2) : {(df['sentiment_kw'] > 0.2).sum()}")
+    print(f"  Negatifs (kw < -0.2) : {(df['sentiment_kw'] < -0.2).sum()}")
+
+    print("\n[sentiment] === ETAPE 2 : Llama sur les news fortes ===")
+    strong_mask = df["sentiment_kw"].abs() > 0.3
+    strong_df = df[strong_mask].copy()
+    print(f"  {len(strong_df)} news fortes a verifier par Llama")
+
+    if len(strong_df) > 0 and GROQ_API_KEY:
+        client = Groq(api_key=GROQ_API_KEY)
+        llama_scores = []
+        llama_raisons = []
+        for i, (_, row) in enumerate(strong_df.iterrows()):
+            score, raison = llama_sentiment(client, row["title"], row.get("summary", ""))
+            llama_scores.append(score)
+            llama_raisons.append(raison)
+            if (i + 1) % 10 == 0:
+                print(f"    {i+1}/{len(strong_df)} validees")
+            time.sleep(SLEEP_LLAMA)
+
+        strong_df["sentiment_llama"] = llama_scores
+        strong_df["raison"] = llama_raisons
+        df = df.merge(strong_df[["title", "sentiment_llama", "raison"]], on="title", how="left")
+    else:
+        df["sentiment_llama"] = None
+        df["raison"] = ""
+
+    # Sentiment individuel : kw + llama, SANS poids
+    def final_score(row):
+        kw = row["sentiment_kw"]
+        ll = row.get("sentiment_llama")
+        if pd.notna(ll):
+            return float(np.clip(0.4 * kw + 0.6 * ll, -1, 1))
+        return float(np.clip(kw, -1, 1))
+
+    df["sentiment"] = df.apply(final_score, axis=1)
+    df["impact"] = df["sentiment"].apply(impact_from_score)
+
+    out = f"{DATA_RAW}/banks_news_scored.parquet"
+    df.to_parquet(out)
+    print(f"\n[sentiment] Sauvegarde -> {out}")
+
+    print("\n" + "=" * 50)
+    print("STATISTIQUES")
+    print("=" * 50)
+    print(f"Sentiment moyen : {df['sentiment'].mean():+.3f}")
+    print("\nPar banque :")
+    print(df.groupby("tickers")["sentiment"].agg(["mean", "count"]).round(3))
+    return df
+
+
 if __name__ == "__main__":
-    import sys
     if "--keywords-only" in sys.argv:
         score_news_keywords_only()
     else:
