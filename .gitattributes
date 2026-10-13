@@ -1,0 +1,7 @@
+# Les parquet sont des fichiers binaires
+*.parquet binary
+
+# En cas de conflit, GitHub Actions gagne toujours
+data/raw/*.parquet merge=ours
+data/processed/*.parquet merge=ours
+data/models/*.joblib binary

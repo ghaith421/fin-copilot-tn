@@ -1,7 +1,6 @@
 name: Mise a jour automatique
 
 on:
-  # 4 fois par heure : minute 0, 15, 30, 45
   schedule:
     - cron: '0 * * * *'
     - cron: '15 * * * *'
@@ -18,6 +17,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Python 3.12
         uses: actions/setup-python@v5
@@ -58,10 +59,16 @@ jobs:
           fi
         continue-on-error: true
 
-      - name: Commit and push
+      - name: Commit and push (avec gestion des conflits)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/
           git diff --staged --quiet || git commit -m "Auto-update: $(date +'%Y-%m-%d %H:%M')"
-          git push
+          
+          # Essayer de pull avec strategie de resolution automatique
+          git config pull.rebase false
+          git pull origin main --no-edit --strategy-option=ours || true
+          
+          # Push
+          git push origin main || echo "Push failed, will retry next run"
