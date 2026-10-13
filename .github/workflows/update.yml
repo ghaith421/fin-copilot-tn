@@ -1,8 +1,11 @@
 name: Mise a jour automatique
 
 on:
+  # 4 fois par heure : minute 0, 15, 30, 45
   schedule:
+    - cron: '0 * * * *'
     - cron: '15 * * * *'
+    - cron: '30 * * * *'
     - cron: '45 * * * *'
   workflow_dispatch:
 
