@@ -6,7 +6,7 @@ import feedparser
 import requests
 import pandas as pd
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from config import DATA_RAW
 
@@ -29,7 +29,7 @@ BANKS = {
 }
 
 # =====================================================
-# MOTS-CLES SECTORIELS (pour elargir le filtre)
+# MOTS-CLES SECTORIELS
 # =====================================================
 SECTOR_KEYWORDS = [
     "bancaire", "banque", "banques",
@@ -42,7 +42,7 @@ SECTOR_KEYWORDS = [
 ]
 
 # =====================================================
-# RSS DIRECTS (nouveaux)
+# RSS DIRECTS
 # =====================================================
 RSS_DIRECT = {
     "ilboursa": [
@@ -86,6 +86,9 @@ RSS_DIRECT = {
     ],
 }
 
+# Nombre de jours d'historique a conserver
+DAYS_BACK = 60
+
 
 def google_news_url(query):
     q = requests.utils.quote(query)
@@ -95,7 +98,7 @@ def google_news_url(query):
 # =====================================================
 # FETCH GOOGLE NEWS
 # =====================================================
-def fetch_google_news(ticker, keywords, max_per_query=30):
+def fetch_google_news(ticker, keywords, max_per_query=50):
     rows = []
     seen_titles = set()
 
@@ -134,10 +137,9 @@ def fetch_google_news(ticker, keywords, max_per_query=30):
 
 
 # =====================================================
-# FETCH RSS DIRECTS (nouveau)
+# FETCH RSS DIRECTS
 # =====================================================
 def fetch_direct_rss():
-    """Recupere les news des RSS directs tunisiens."""
     all_rows = []
     successful_sources = []
 
@@ -165,7 +167,7 @@ def fetch_direct_rss():
                         "summary": getattr(e, "summary", ""),
                         "source": source_name,
                         "url": getattr(e, "link", ""),
-                        "tickers": None,  # sera rempli apres
+                        "tickers": None,
                     })
                     count += 1
 
@@ -187,10 +189,9 @@ def fetch_direct_rss():
 
 
 # =====================================================
-# MATCHING (elargi avec secteur)
+# MATCHING
 # =====================================================
 def detect_bank(text):
-    """Retourne le ticker de la banque mentionnee."""
     text = (text or "").lower()
     for ticker, keywords in BANKS.items():
         if any(kw.lower() in text for kw in keywords):
@@ -199,23 +200,16 @@ def detect_bank(text):
 
 
 def is_sector_news(text):
-    """Verifie si la news concerne le secteur bancaire (filtre elargi)."""
     text = (text or "").lower()
     return any(kw.lower() in text for kw in SECTOR_KEYWORDS)
 
 
 def tag_news(df):
-    """
-    Associe chaque news a un ou plusieurs tickers.
-    - Si ticker detecte -> utilise ce ticker
-    - Si secteur bancaire -> "SECTEUR" (banque generique)
-    """
     def match(row):
         text = (row["title"] or "") + " " + (row.get("summary", "") or "")
         ticker = detect_bank(text)
         if ticker:
             return ticker
-        # Si pas de ticker mais news sectorielle -> tag SECTEUR
         if is_sector_news(text):
             return "SECTEUR"
         return None
@@ -238,7 +232,7 @@ def ingest_banks_news():
         print(f"[banks]   {ticker}: {len(rows)} articles")
         all_rows.extend(rows)
 
-    # 2. RSS directs (nouveau)
+    # 2. RSS directs
     print("[banks] RSS directs tunisiens...")
     direct_rows = fetch_direct_rss()
     print(f"[banks]   {len(direct_rows)} articles des RSS directs")
@@ -252,7 +246,17 @@ def ingest_banks_news():
     df = df.drop_duplicates(subset=["title"]).dropna(subset=["title"])
     df = df[df["title"].str.len() > 15]
 
-    # Tag (elargi)
+    # =====================================================
+    # LIMITER A 60 JOURS
+    # =====================================================
+    df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
+    cutoff = pd.Timestamp.now() - timedelta(days=DAYS_BACK)
+    n_before = len(df)
+    df = df[df["date"] >= cutoff]
+    n_after = len(df)
+    print(f"[banks] Filtre {DAYS_BACK} jours : {n_before} -> {n_after} news")
+
+    # Tag
     df = tag_news(df)
     df = df.sort_values("date", ascending=False).reset_index(drop=True)
 

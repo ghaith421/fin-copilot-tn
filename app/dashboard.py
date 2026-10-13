@@ -7,13 +7,13 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from scipy import stats
-from datetime import datetime
+from datetime import datetime, timedelta
 from config import DATA_RAW
 
 st.set_page_config(page_title="Fin Copilot TN", layout="wide", page_icon="🇹🇳")
 
 # =========================================================
-# AUTO-FETCH (une seule fois par session)
+# AUTO-FETCH
 # =========================================================
 if "auto_fetch_done" not in st.session_state:
     st.session_state.auto_fetch_done = False
@@ -32,7 +32,7 @@ st.title("Fin Copilot TN — Banques tunisiennes")
 st.caption("Analyse pedagogique du secteur bancaire tunisien. Pas un conseil en investissement.")
 
 # =========================================================
-# IMPORT CHATBOT + REGRESSION
+# IMPORT CHATBOT
 # =========================================================
 try:
     from src.rag.chat_tn import ask as chat_ask
@@ -50,7 +50,7 @@ except Exception as e:
 
 
 # =========================================================
-# CHARGEMENT DES DONNEES
+# CHARGEMENT
 # =========================================================
 @st.cache_data(ttl=60)
 def load_prices():
@@ -70,10 +70,14 @@ def load_prices():
 @st.cache_data(ttl=60)
 def load_news():
     try:
-        return pd.read_parquet(f"{DATA_RAW}/banks_news_scored.parquet")
+        df = pd.read_parquet(f"{DATA_RAW}/banks_news_scored.parquet")
+        df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
+        return df
     except Exception:
         try:
-            return pd.read_parquet(f"{DATA_RAW}/banks_news.parquet")
+            df = pd.read_parquet(f"{DATA_RAW}/banks_news.parquet")
+            df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
+            return df
         except Exception:
             return pd.DataFrame()
 
@@ -82,31 +86,19 @@ def load_news():
 def load_impact():
     try:
         df = pd.read_parquet(f"{DATA_RAW}/news_impact_clean.parquet")
-        df["date"] = pd.to_datetime(df["date"])
+        df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
         return df
     except Exception:
         return pd.DataFrame()
-
-
-@st.cache_data(ttl=300)
-def load_regression():
-    if not REG_OK:
-        return None, None
-    try:
-        df = prepare_dataset()
-        if len(df) == 0:
-            return None, None
-        results = run_all_regressions(df)
-        events = analyze_by_event(df)
-        return df, (results, events)
-    except Exception:
-        return None, None
 
 
 prices = load_prices()
 news = load_news()
 impact = load_impact()
 sent_col = "sentiment" if "sentiment" in news.columns else ("sentiment_kw" if "sentiment_kw" in news.columns else None)
+
+# Liste complete des banques
+ALL_BANKS = ["BIAT", "ATB", "AB", "AMEN", "UIB", "BNA", "BH", "STB", "BT", "BTE", "ZB", "UBCI", "SECTEUR"]
 
 
 # =========================================================
@@ -122,28 +114,43 @@ else:
 ticker = st.sidebar.selectbox("Banque", banques_dispo if banques_dispo else ["-"])
 
 st.sidebar.markdown("---")
+period_options = {
+    "Aujourd'hui": 1,
+    "3 jours": 3,
+    "7 jours (recommande)": 7,
+    "14 jours": 14,
+    "30 jours": 30,
+    "60 jours": 60,
+    "Tout": 99999,
+}
+period_label = st.sidebar.selectbox(
+    "Periode d'analyse",
+    list(period_options.keys()),
+    index=2,
+)
+period_days = period_options[period_label]
+
+st.sidebar.markdown("---")
 st.sidebar.markdown("### Actualisation")
 
 col1, col2 = st.sidebar.columns(2)
 
 with col1:
-    if st.button("Rafraichir", use_container_width=True, help="Recharge l'affichage sans rescraper"):
+    if st.button("Rafraichir", use_container_width=True, help="Recharge l'affichage"):
         st.cache_data.clear()
         st.rerun()
 
 with col2:
-    if st.button("Tout relancer", use_container_width=True, help="Scrape a nouveau les news (1-2 min)"):
+    if st.button("Tout relancer", use_container_width=True, help="Scrape a nouveau (1-2 min)"):
         st.cache_data.clear()
         st.session_state.auto_fetch_done = False
         st.rerun()
 
 st.sidebar.markdown("---")
 
-# Heure temps reel (recalculee a chaque rendu)
 now = datetime.now().strftime("%H:%M:%S")
 st.sidebar.markdown(f"**Heure** : `{now}`")
 
-# Indicateur de fraicheur des donnees
 news_path = f"{DATA_RAW}/banks_news_scored.parquet"
 if os.path.exists(news_path):
     mtime = datetime.fromtimestamp(os.path.getmtime(news_path))
@@ -157,53 +164,108 @@ if os.path.exists(news_path):
 else:
     st.sidebar.error("Pas de donnees")
 
+
 # =========================================================
-# ONGLETS
+# FILTRE PAR PERIODE
 # =========================================================
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+cutoff = pd.Timestamp.now() - pd.Timedelta(days=period_days)
+
+if len(news) > 0:
+    news_filtered = news[news["date"] >= cutoff].copy()
+else:
+    news_filtered = news
+
+if len(impact) > 0:
+    impact_filtered = impact[impact["date"] >= cutoff].copy()
+else:
+    impact_filtered = impact
+
+n_news_total = len(news)
+n_news_filtered = len(news_filtered)
+
+
+# =========================================================
+# ONGLETS (6)
+# =========================================================
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "Vue d'ensemble", "Detail banque", "News", "Prix",
-    "Impact News", "Econometrie", "Chatbot"
+    "Impact News", "Chatbot"
 ])
 
 # ===== ONGLET 1 =====
 with tab1:
-    st.subheader("Secteur bancaire tunisien — Vue d'ensemble")
+    st.subheader(f"Secteur bancaire tunisien — {period_label}")
 
-    if len(news) == 0 or sent_col is None:
-        st.warning("Aucune news.")
+    if len(news_filtered) == 0 or sent_col is None:
+        st.warning(f"Aucune news sur cette periode. Essaie une periode plus large.")
     else:
-        stats_df = news.groupby("tickers").agg(
+        stats_df = news_filtered.groupby("tickers").agg(
             sentiment_moyen=(sent_col, "mean"),
             nb_news=(sent_col, "count"),
-        ).round(3).sort_values("sentiment_moyen", ascending=False)
+        ).round(3)
+
+        # Ajouter TOUTES les banques (meme sans news)
+        for bank in ALL_BANKS:
+            if bank not in stats_df.index:
+                stats_df.loc[bank] = [0.0, 0]
+
+        stats_df = stats_df.sort_values("sentiment_moyen", ascending=False)
 
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Banques suivies", len(stats_df))
-        col2.metric("News totales", len(news))
-        col3.metric("Sentiment moyen", f"{news[sent_col].mean():+.3f}")
-        col4.metric("Meilleure", stats_df.index[0] if len(stats_df) > 0 else "-")
+        col1.metric("Banques", len(stats_df))
+        col2.metric("News", len(news_filtered),
+                    delta=f"{n_news_filtered}/{n_news_total}")
+        col3.metric("Sentiment moyen", f"{news_filtered[sent_col].mean():+.3f}")
+        active_stats = stats_df[stats_df["nb_news"] > 0]
+        best = active_stats.index[0] if len(active_stats) > 0 else "-"
+        col4.metric("Meilleure", best)
 
-        st.markdown("### Sentiment par banque")
+        st.markdown(f"### Sentiment par banque ({period_label})")
+
         fig = go.Figure()
-        colors = ["#27AE60" if v > 0.15 else ("#E74C3C" if v < -0.15 else "#95A5A6")
-                  for v in stats_df["sentiment_moyen"]]
+        colors = []
+        for _, row in stats_df.iterrows():
+            if row["nb_news"] == 0:
+                colors.append("#CCCCCC")
+            elif row["sentiment_moyen"] > 0.15:
+                colors.append("#27AE60")
+            elif row["sentiment_moyen"] < -0.15:
+                colors.append("#E74C3C")
+            else:
+                colors.append("#95A5A6")
+
         fig.add_trace(go.Bar(
-            x=stats_df.index, y=stats_df["sentiment_moyen"],
+            x=stats_df.index,
+            y=stats_df["sentiment_moyen"],
             marker_color=colors,
-            text=[f"{v:+.3f}" for v in stats_df["sentiment_moyen"]],
+            text=[f"{v:+.3f}" if n > 0 else "0 news" for v, n in zip(stats_df["sentiment_moyen"], stats_df["nb_news"])],
             textposition="outside",
+            customdata=stats_df["nb_news"],
+            hovertemplate="<b>%{x}</b><br>Sentiment : %{y:+.3f}<br>News : %{customdata}<extra></extra>",
         ))
         fig.add_hline(y=0, line_color="black", line_width=1)
         fig.update_layout(height=400, yaxis_range=[-1, 1], showlegend=False)
         st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("### Tableau recapitulatif")
+        df_show = stats_df.copy()
+        df_show.columns = ["Sentiment moyen", "Nb news"]
+        df_show["Statut"] = df_show.apply(
+            lambda r: "Aucune news" if r["Nb news"] == 0 else (
+                "Positif" if r["Sentiment moyen"] > 0.15 else (
+                    "Negatif" if r["Sentiment moyen"] < -0.15 else "Neutre"
+                )
+            ), axis=1
+        )
+        st.dataframe(df_show, use_container_width=True)
 
 # ===== ONGLET 2 =====
 with tab2:
     if ticker == "-" or sent_col is None:
         st.info("Aucune banque disponible.")
     else:
-        st.subheader(f"Banque : {ticker}")
-        news_t = news[news["tickers"] == ticker].sort_values("date", ascending=False)
+        st.subheader(f"Banque : {ticker} — {period_label}")
+        news_t = news_filtered[news_filtered["tickers"] == ticker].sort_values("date", ascending=False)
 
         if len(news_t) > 0:
             sent_moy = news_t[sent_col].mean()
@@ -223,174 +285,172 @@ with tab2:
                 fig.update_layout(height=300)
                 st.plotly_chart(fig, use_container_width=True)
 
-            st.markdown("### News")
+            st.markdown(f"### News ({period_label})")
             for _, r in news_t.head(30).iterrows():
                 s = r[sent_col]
                 icon = "[+]" if s > 0.2 else ("[-]" if s < -0.2 else "[=]")
                 st.markdown(f"{icon} **{r['title'][:120]}** — `{s:+.2f}`")
+        else:
+            st.info(f"Aucune news pour {ticker} sur cette periode.")
 
 # ===== ONGLET 3 =====
 with tab3:
-    st.subheader("Toutes les news")
-    if len(news) > 0:
-        df_f = news.sort_values("date", ascending=False).head(50)
+    st.subheader(f"Toutes les news ({period_label})")
+    st.caption(f"Affichage : {len(news_filtered)} news sur {period_label} (base totale : {n_news_total})")
+
+    if len(news_filtered) > 0:
+        df_f = news_filtered.sort_values("date", ascending=False).head(100)
         for _, r in df_f.iterrows():
             s = r[sent_col]
             icon = "[+]" if s > 0.2 else ("[-]" if s < -0.2 else "[=]")
-            with st.expander(f"{icon} [{r['tickers']}] {r['title'][:100]} ({s:+.2f})"):
+            date_str = r["date"].strftime("%d/%m") if pd.notna(r["date"]) else "?"
+            with st.expander(f"{icon} [{r['tickers']}] {r['title'][:100]} ({s:+.2f}) — {date_str}"):
                 st.markdown(f"**Banque** : {r['tickers']}")
+                st.markdown(f"**Date** : {r['date']}")
                 st.markdown(f"**Sentiment** : `{s:+.3f}`")
                 st.markdown(f"**Type** : `{r.get('event_type', '?')}`")
                 if r.get("url"):
                     st.markdown(f"[Lien]({r['url']})")
+    else:
+        st.warning(f"Aucune news sur {period_label}.")
 
 # ===== ONGLET 4 =====
 with tab4:
     st.subheader("Prix des banques")
     if len(prices) > 0:
-        last_prices = prices.sort_values("date").groupby("ticker").last().reset_index()
+        prices_filtered = prices[prices["date"] >= cutoff]
+        if len(prices_filtered) == 0:
+            prices_filtered = prices
+
+        last_prices = prices_filtered.sort_values("date").groupby("ticker").last().reset_index()
         col1, col2 = st.columns([1, 2])
         with col1:
             for _, r in last_prices.sort_values("ticker").iterrows():
                 st.metric(r["ticker"], f"{r['close']:.2f} DT")
         with col2:
             fig = go.Figure()
-            for t in sorted(prices["ticker"].unique()):
-                sub = prices[prices["ticker"] == t].sort_values("date")
+            for t in sorted(prices_filtered["ticker"].unique()):
+                sub = prices_filtered[prices_filtered["ticker"] == t].sort_values("date")
                 fig.add_trace(go.Scatter(x=sub["date"], y=sub["close"], name=t, mode="lines"))
-            fig.update_layout(height=500, hovermode="x unified")
+            fig.update_layout(height=500, hovermode="x unified",
+                              title=f"Evolution sur {period_label}")
             st.plotly_chart(fig, use_container_width=True)
 
 # ===== ONGLET 5 : IMPACT NEWS =====
 with tab5:
-    st.subheader("Impact des news sur le cours")
+    st.subheader("Impact des news")
+    st.caption("Analyse sur TOUTE la base (l'impact necessite du recul)")
 
-    with st.expander("Comment lire ce tableau ?", expanded=False):
+    with st.expander("Pourquoi la periode est differente ici ?", expanded=False):
         st.markdown("""
-**Objectif** : voir comment le cours a reagi apres chaque news.
+**Important** : l'impact d'une news se mesure **plusieurs jours apres** sa publication.
 
-| Colonne | Signification |
-|---|---|
-| **Sentiment** | Score (-1 negatif, +1 positif) |
-| **Var %** | Variation du cours |
-| **Alpha** | Surperformance vs indice bancaire |
-| **Verdict** | Sentiment confirme par le cours ? |
+- **J+1** : 1 jour apres (disponible rapidement)
+- **J+5** : 5 jours apres
+- **J+20** : 20 jours apres (necessite beaucoup de recul)
 
-**Alpha > 0** = la news a fait mieux que le marche.
+**Plus la base grandit, plus on aura d'impact J+20.**
+
+Cet onglet affiche toujours la **base complete**.
         """)
 
-    if len(impact) == 0:
-        st.warning("Aucune donnee. Lance : python -m src.analysis.news_impact_clean")
+    impact_full = impact.copy() if len(impact) > 0 else pd.DataFrame()
+
+    if len(impact_full) == 0:
+        st.warning("Aucune donnee d'impact. Lance : python -m src.analysis.news_impact_clean")
     else:
-        df_clean = impact[(impact["has_dividend"] == False) & (impact["var_j20_pct"].notna())]
-        df_pos = df_clean[df_clean["sentiment"] > 0.1]
-        df_neg = df_clean[df_clean["sentiment"] < -0.1]
+        df_clean = impact_full[impact_full["has_dividend"] == False]
+
+        st.markdown("### Horizon d'analyse")
+        horizon = st.radio(
+            "Choisir l'horizon",
+            ["J+1 (1 jour)", "J+5 (5 jours)", "J+20 (20 jours)"],
+            index=1,
+            horizontal=True,
+        )
+
+        h = 1 if "J+1" in horizon else (5 if "J+5" in horizon else 20)
+        var_col = f"var_j{h}_pct"
+        bench_col = f"bench_j{h}_pct"
+        alpha_col = f"alpha_j{h}_pct"
+
+        df_h = df_clean[df_clean[var_col].notna()]
+        df_pos = df_h[df_h["sentiment"] > 0.1]
+        df_neg = df_h[df_h["sentiment"] < -0.1]
+
+        n_total = len(impact_full)
+        n_with = len(df_h)
+        st.info(f"**{n_with}** news avec impact **{horizon}** mesurable sur **{n_total}** au total")
 
         col1, col2 = st.columns(2)
         with col1:
-            st.markdown("#### News positives")
+            st.markdown(f"#### 🟢 News positives (n={len(df_pos)})")
             if len(df_pos) > 0:
-                st.metric("Nombre", len(df_pos))
-                st.metric("Rendement J+20", f"{df_pos['var_j20_pct'].mean():+.2f}%")
-                if "alpha_j20_pct" in df_pos.columns:
-                    st.metric("Alpha J+20", f"{df_pos['alpha_j20_pct'].mean():+.2f} pp")
+                st.metric(f"Rendement {horizon}", f"{df_pos[var_col].mean():+.2f}%")
+                if bench_col in df_pos.columns:
+                    st.metric("Indice bancaire", f"{df_pos[bench_col].mean():+.2f}%")
+                if alpha_col in df_pos.columns:
+                    alpha_val = df_pos[alpha_col].mean()
+                    delta_val = "Surperformance" if alpha_val > 0 else "Sous-performance"
+                    st.metric(f"Alpha {horizon}", f"{alpha_val:+.2f} pp", delta=delta_val)
+            else:
+                st.info("Aucune news positive sur cet horizon")
 
         with col2:
-            st.markdown("#### News negatives")
+            st.markdown(f"#### 🔴 News negatives (n={len(df_neg)})")
             if len(df_neg) > 0:
-                st.metric("Nombre", len(df_neg))
-                st.metric("Rendement J+20", f"{df_neg['var_j20_pct'].mean():+.2f}%")
-                if "alpha_j20_pct" in df_neg.columns:
-                    st.metric("Alpha J+20", f"{df_neg['alpha_j20_pct'].mean():+.2f} pp")
+                st.metric(f"Rendement {horizon}", f"{df_neg[var_col].mean():+.2f}%")
+                if bench_col in df_neg.columns:
+                    st.metric("Indice bancaire", f"{df_neg[bench_col].mean():+.2f}%")
+                if alpha_col in df_neg.columns:
+                    alpha_val = df_neg[alpha_col].mean()
+                    delta_val = "Surperformance" if alpha_val > 0 else "Sous-performance"
+                    st.metric(f"Alpha {horizon}", f"{alpha_val:+.2f} pp", delta=delta_val)
+            else:
+                st.info("Aucune news negative sur cet horizon")
 
         st.markdown("---")
-        st.markdown("### Toutes les news avec impact")
+        st.markdown(f"### Toutes les news avec impact {horizon}")
 
-        df_display = impact.dropna(subset=["var_j20_pct"]).head(100)
+        df_display = df_h.sort_values("date", ascending=False).head(100)
         display_cols = ["date", "ticker", "sentiment", "price_at_news",
-                        "var_j20_pct", "bench_j20_pct", "alpha_j20_pct", "verdict"]
+                        var_col, bench_col, alpha_col, "verdict"]
         display_cols = [c for c in display_cols if c in df_display.columns]
-        st.dataframe(df_display[display_cols], use_container_width=True)
 
-# ===== ONGLET 6 : ECONOMETRIE =====
-with tab6:
-    st.subheader("Analyse econometrique")
-
-    with st.expander("Glossaire : comprendre les chiffres", expanded=False):
-        st.markdown("""
-**Coefficient** : variation du cours quand sentiment +1.0
-**R²** : qualite du modele (0 a 1). > 0.02 = bon en finance
-**P-value** : < 0.05 = significatif
-**n** : nombre d'observations
-        """)
-
-    if not REG_OK:
-        st.error(f"Module regression indisponible : {REG_ERROR}")
-    else:
-        with st.spinner("Calcul..."):
-            reg_df, reg_output = load_regression()
-
-        if reg_df is None:
-            st.warning("Pas assez de donnees.")
+        if len(df_display) > 0:
+            st.dataframe(df_display[display_cols], use_container_width=True)
         else:
-            results, events = reg_output
-            st.success(f"Regression sur {len(reg_df)} observations")
+            st.warning(f"Aucune news avec impact {horizon} mesurable.")
 
-            for horizon, r in results.items():
-                if "error" in r:
-                    st.error(f"**{horizon}** : {r['error']}")
-                    continue
-
-                sig = r["significant"]
-                sig_txt = "SIGNIFICATIF" if sig else "Non significatif"
-
-                with st.expander(f"{horizon} — Coef : {r['slope']:+.4f} — p : {r['p_value']:.4f} — {sig_txt}", expanded=sig):
-                    col1, col2, col3, col4 = st.columns(4)
-                    col1.metric("Coefficient", f"{r['slope']:+.4f}")
-                    col2.metric("R2", f"{r['r_squared']:.4f}")
-                    col3.metric("P-value", f"{r['p_value']:.4f}")
-                    col4.metric("n", r["n"])
-
-                    if sig:
-                        st.success(f"Quand le sentiment +1.0, le cours varie de {r['slope']*100:+.2f}% sur {horizon}.")
-                    else:
-                        st.info(f"Pas de relation significative a {horizon}.")
-
-            st.markdown("---")
-            st.markdown("### Nuage de points")
-            horizon_choice = st.selectbox("Horizon", ["J+1", "J+5", "J+20"], index=2)
-            h = int(horizon_choice.replace("J+", ""))
-            target = f"ret_{h}"
-
-            sub_plot = reg_df.dropna(subset=[target, "sentiment"])
-            if len(sub_plot) > 0:
-                x = sub_plot["sentiment"].values
-                y = sub_plot[target].values * 100
-
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(x=x, y=y, mode="markers",
-                                          marker=dict(size=6, color="#2E86DE", opacity=0.5),
-                                          name="News"))
-                if len(x) > 1:
-                    slope, intercept, _, _, _ = stats.linregress(x, sub_plot[target].values)
-                    x_line = np.linspace(x.min(), x.max(), 50)
-                    y_line = (slope * x_line + intercept) * 100
-                    fig.add_trace(go.Scatter(x=x_line, y=y_line, mode="lines",
-                                              line=dict(color="#E74C3C", width=3),
-                                              name="Regression"))
-                fig.add_hline(y=0, line_dash="dot", line_color="gray")
-                fig.add_vline(x=0, line_dash="dot", line_color="gray")
-                fig.update_layout(height=450,
-                                  xaxis_title="Sentiment",
-                                  yaxis_title=f"Rendement {horizon} (%)")
-                st.plotly_chart(fig, use_container_width=True)
-
-# ===== ONGLET 7 : CHATBOT =====
-with tab7:
+# ===== ONGLET 6 : CHATBOT =====
+with tab6:
     st.subheader("Chatbot banques tunisiennes")
+    st.caption("Pose des questions sur les banques, la finance, ou les analyses")
+
     if not CHATBOT_OK:
         st.error(f"Chatbot indisponible : {CHAT_ERROR}")
     else:
+        st.markdown("**Exemples :**")
+        cols = st.columns(4)
+        quick_qs = [
+            "Quelle banque a le meilleur sentiment ?",
+            "Analyse BIAT",
+            "Explique la regression",
+            "C'est quoi le PNB ?",
+        ]
+        for i, q in enumerate(quick_qs):
+            with cols[i]:
+                if st.button(q, key=f"quick_{i}", use_container_width=True):
+                    st.session_state.setdefault("messages", [])
+                    st.session_state.messages.append({"role": "user", "content": q})
+                    with st.spinner("Reflexion..."):
+                        try:
+                            rep = chat_ask(q)
+                        except Exception as e:
+                            rep = f"Erreur : {e}"
+                    st.session_state.messages.append({"role": "assistant", "content": rep})
+                    st.rerun()
+
         if "messages" not in st.session_state:
             st.session_state.messages = []
 
@@ -411,7 +471,7 @@ with tab7:
                 st.markdown(answer)
                 st.session_state.messages.append({"role": "assistant", "content": answer})
 
-        if st.button("Effacer"):
+        if st.button("Effacer la conversation"):
             st.session_state.messages = []
             st.rerun()
 

@@ -8,7 +8,6 @@ from config import DATA_RAW
 
 
 def _compute_bench(index_df, start_date, horizons=(1, 5, 20)):
-    """Calcule le rendement de l'indice bancaire a J+h."""
     index_df = index_df.sort_values("date").reset_index(drop=True)
     idx = index_df[index_df["date"] >= start_date].index
     if len(idx) == 0:
@@ -26,12 +25,6 @@ def _compute_bench(index_df, start_date, horizons=(1, 5, 20)):
 
 
 def build_clean_impact():
-    """
-    Version nettoyee avec benchmark :
-    - Dedup par (ticker, date)
-    - Detection des dividendes
-    - Comparaison vs indice bancaire
-    """
     try:
         news = pd.read_parquet(f"{DATA_RAW}/banks_news_scored.parquet")
     except Exception:
@@ -104,7 +97,6 @@ def build_clean_impact():
 
         sentiment = n[sent_col]
 
-        # Benchmark
         bench = {}
         if index_df is not None:
             bench = _compute_bench(index_df, entry["date"])
@@ -117,17 +109,18 @@ def build_clean_impact():
         alpha_j5 = var5 - bench_j5 if pd.notna(var5) and pd.notna(bench_j5) else np.nan
         alpha_j20 = var20 - bench_j20 if pd.notna(var20) and pd.notna(bench_j20) else np.nan
 
+        # Verdict base sur J+5 (plus disponible)
         verdict = "En attente"
-        if pd.notna(var20):
+        if pd.notna(var5):
             if has_dividend:
                 verdict = "Dividende detecte"
-            elif sentiment > 0.1 and var20 > 0:
+            elif sentiment > 0.1 and var5 > 0:
                 verdict = "Confirme (positif -> hausse)"
-            elif sentiment > 0.1 and var20 < 0:
+            elif sentiment > 0.1 and var5 < 0:
                 verdict = "Non confirme (positif -> baisse)"
-            elif sentiment < -0.1 and var20 < 0:
+            elif sentiment < -0.1 and var5 < 0:
                 verdict = "Confirme (negatif -> baisse)"
-            elif sentiment < -0.1 and var20 > 0:
+            elif sentiment < -0.1 and var5 > 0:
                 verdict = "Non confirme (negatif -> hausse)"
             else:
                 verdict = "Neutre"
@@ -163,25 +156,34 @@ def build_clean_impact():
     out = f"{DATA_RAW}/news_impact_clean.parquet"
     df.to_parquet(out)
 
-    # Stats
-    df_clean = df[(df["has_dividend"] == False) & (df["var_j20_pct"].notna())]
-    df_pos = df_clean[df_clean["sentiment"] > 0.1]
-    df_neg = df_clean[df_clean["sentiment"] < -0.1]
+    # Stats par horizon
+    df_clean = df[df["has_dividend"] == False]
 
     print(f"[impact] {len(df)} news traitees")
-    print(f"[impact] {len(df_clean)} news avec impact mesurable (hors dividendes)")
+
+    for h in [1, 5, 20]:
+        col = f"var_j{h}_pct"
+        n_with = df_clean[col].notna().sum()
+        print(f"[impact] Impact J+{h} mesurable : {n_with} news")
+
+    # Stats J+5 (le plus disponible)
+    df_j5 = df_clean[df_clean["var_j5_pct"].notna()]
+    df_pos = df_j5[df_j5["sentiment"] > 0.1]
+    df_neg = df_j5[df_j5["sentiment"] < -0.1]
 
     if len(df_pos) > 0:
-        print(f"\n>>> SENTIMENT POSITIF (n={len(df_pos)}) :")
-        print(f"    Rendement J+20 : {df_pos['var_j20_pct'].mean():+.2f}%")
-        print(f"    Indice J+20    : {df_pos['bench_j20_pct'].mean():+.2f}%")
-        print(f"    Alpha J+20     : {df_pos['alpha_j20_pct'].mean():+.2f} pp")
+        print(f"\n>>> SENTIMENT POSITIF (n={len(df_pos)}) - J+5 :")
+        print(f"    Rendement moyen J+5 : {df_pos['var_j5_pct'].mean():+.2f}%")
+        if "bench_j5_pct" in df_pos.columns:
+            print(f"    Indice J+5          : {df_pos['bench_j5_pct'].mean():+.2f}%")
+            print(f"    Alpha J+5           : {df_pos['alpha_j5_pct'].mean():+.2f} pp")
 
     if len(df_neg) > 0:
-        print(f"\n>>> SENTIMENT NEGATIF (n={len(df_neg)}) :")
-        print(f"    Rendement J+20 : {df_neg['var_j20_pct'].mean():+.2f}%")
-        print(f"    Indice J+20    : {df_neg['bench_j20_pct'].mean():+.2f}%")
-        print(f"    Alpha J+20     : {df_neg['alpha_j20_pct'].mean():+.2f} pp")
+        print(f"\n>>> SENTIMENT NEGATIF (n={len(df_neg)}) - J+5 :")
+        print(f"    Rendement moyen J+5 : {df_neg['var_j5_pct'].mean():+.2f}%")
+        if "bench_j5_pct" in df_neg.columns:
+            print(f"    Indice J+5          : {df_neg['bench_j5_pct'].mean():+.2f}%")
+            print(f"    Alpha J+5           : {df_neg['alpha_j5_pct'].mean():+.2f} pp")
 
     return df
 
