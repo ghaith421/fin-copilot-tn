@@ -2,6 +2,7 @@ yfinance
 pandas
 numpy
 scikit-learn
+scipy
 xgboost
 joblib
 feedparser
@@ -16,3 +17,5 @@ tqdm
 groq
 pyarrow
 schedule
+sentence-transformers
+torch
