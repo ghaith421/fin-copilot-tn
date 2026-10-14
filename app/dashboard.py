@@ -7,10 +7,13 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from scipy import stats
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from config import DATA_RAW
 
 st.set_page_config(page_title="Fin Copilot TN", layout="wide", page_icon="🇹🇳")
+
+# Fuseau horaire Tunisie (UTC+1)
+TZ_TUNISIA = timezone(timedelta(hours=1))
 
 # =========================================================
 # AUTO-FETCH
@@ -144,17 +147,20 @@ st.sidebar.markdown("### Actualisation")
 
 col1, col2 = st.sidebar.columns(2)
 with col1:
-    if st.button("Rafraichir", use_container_width=True):
+    if st.button("Rafraichir", use_container_width=True, help="Recharge l'affichage"):
         st.cache_data.clear()
         st.rerun()
 with col2:
-    if st.button("Tout relancer", use_container_width=True):
+    if st.button("Tout relancer", use_container_width=True, help="Tente un nouveau scraping"):
         st.cache_data.clear()
         st.session_state.auto_fetch_done = False
         st.rerun()
 
 st.sidebar.markdown("---")
-st.sidebar.markdown(f"**Heure** : `{datetime.now().strftime('%H:%M:%S')}`")
+
+# Heure Tunisie
+now_tn = datetime.now(TZ_TUNISIA).strftime("%H:%M:%S")
+st.sidebar.markdown(f"**Heure Tunisie** : `{now_tn}`")
 
 news_path = f"{DATA_RAW}/banks_news_scored.parquet"
 if os.path.exists(news_path):
@@ -167,9 +173,18 @@ if os.path.exists(news_path):
     else:
         st.sidebar.warning(f"Donnees : {age_min/60:.1f} h")
 
+st.sidebar.markdown("---")
+st.sidebar.caption(
+    "ℹ️ **Sur Streamlit Cloud**, les sources (Google News) peuvent bloquer. "
+    "Les données sont mises à jour automatiquement par **GitHub Actions** toutes les 15 min."
+)
+st.sidebar.caption(
+    "[Voir les runs GitHub Actions](https://github.com/ghaith421/fin-copilot-tn/actions)"
+)
+
 
 # =========================================================
-# FILTRE PERIODE
+# FILTRE PAR PERIODE
 # =========================================================
 cutoff = pd.Timestamp.now() - pd.Timedelta(days=period_days)
 
@@ -177,6 +192,11 @@ if len(news) > 0:
     news_filtered = news[news["date"] >= cutoff].copy()
 else:
     news_filtered = news
+
+if len(impact) > 0:
+    impact_filtered = impact[impact["date"] >= cutoff].copy()
+else:
+    impact_filtered = impact
 
 n_news_total = len(news)
 n_news_filtered = len(news_filtered)
@@ -216,6 +236,8 @@ with tab1:
         best = active_stats.index[0] if len(active_stats) > 0 else "-"
         col4.metric("Meilleure", best)
 
+        st.markdown(f"### Sentiment par banque ({period_label})")
+
         fig = go.Figure()
         colors = []
         for _, row in stats_df.iterrows():
@@ -229,10 +251,13 @@ with tab1:
                 colors.append("#95A5A6")
 
         fig.add_trace(go.Bar(
-            x=stats_df.index, y=stats_df["sentiment_moyen"],
+            x=stats_df.index,
+            y=stats_df["sentiment_moyen"],
             marker_color=colors,
             text=[f"{v:+.3f}" if n > 0 else "0 news" for v, n in zip(stats_df["sentiment_moyen"], stats_df["nb_news"])],
             textposition="outside",
+            customdata=stats_df["nb_news"],
+            hovertemplate="<b>%{x}</b><br>Sentiment : %{y:+.3f}<br>News : %{customdata}<extra></extra>",
         ))
         fig.add_hline(y=0, line_color="black", line_width=1)
         fig.update_layout(height=400, yaxis_range=[-1, 1], showlegend=False)
@@ -240,11 +265,11 @@ with tab1:
 
         st.markdown("### Tableau recapitulatif")
         df_show = stats_df.copy()
-        df_show.columns = ["Sentiment", "Nb news"]
+        df_show.columns = ["Sentiment moyen", "Nb news"]
         df_show["Statut"] = df_show.apply(
             lambda r: "Aucune news" if r["Nb news"] == 0 else (
-                "Positif" if r["Sentiment"] > 0.15 else (
-                    "Negatif" if r["Sentiment"] < -0.15 else "Neutre"
+                "Positif" if r["Sentiment moyen"] > 0.15 else (
+                    "Negatif" if r["Sentiment moyen"] < -0.15 else "Neutre"
                 )
             ), axis=1
         )
@@ -286,10 +311,10 @@ with tab2:
             st.info(f"Aucune news pour {ticker} sur cette periode.")
 
 
-# ===== ONGLET 3 : NEWS + EXPLICATION =====
+# ===== ONGLET 3 : NEWS + XAI =====
 with tab3:
     st.subheader(f"Toutes les news ({period_label})")
-    st.caption(f"Cliquez sur une news pour voir l'**explication du sentiment** (XAI)")
+    st.caption("Cliquez sur une news pour voir l'**explication du sentiment** (XAI)")
 
     if len(news_filtered) > 0:
         df_f = news_filtered.sort_values("date", ascending=False).head(100)
@@ -304,7 +329,6 @@ with tab3:
                 st.markdown(f"**Sentiment** : `{s:+.3f}`")
                 st.markdown(f"**Type** : `{r.get('event_type', '?')}`")
 
-                # Explication XAI
                 if EXPLAIN_OK:
                     with st.spinner("Analyse du sentiment..."):
                         text_full = (r.get("title", "") or "") + ". " + (r.get("summary", "") or "")
@@ -411,20 +435,12 @@ with tab6:
 **Principe** : quand une nouvelle news arrive, on cherche les **news passées similaires** (via embeddings) et on regarde **ce qui s'est passé après**.
 
 **Utilité** : prédire l'impact d'une news **avant** que le marché ne réagisse.
-
-**Exemple** :
-- News : "BIAT annonce un PNB en hausse"
-- Jumeaux : 5 news similaires passées
-- Impact moyen de ces jumeaux : +2.3% à J+5
-- Prédiction : cette news pourrait faire +2.3% à J+5
             """)
 
-        # Choix
         mode = st.radio("Mode", ["Choisir une news existante", "Saisir une news"], horizontal=True)
 
         if mode == "Choisir une news existante":
             if len(news) > 0:
-                # Prendre les 50 dernières news
                 recent_news = news.sort_values("date", ascending=False).head(50)
                 options = [f"[{r['tickers']}] {r['title'][:80]}" for _, r in recent_news.iterrows()]
                 selected_idx = st.selectbox("News", range(len(options)), format_func=lambda i: options[i])
@@ -462,7 +478,6 @@ with tab6:
                                 st.caption(f"Impact J+5 : `{j5_str}` | Sentiment : `{t.get('sentiment', 0):+.2f}`")
 
         else:
-            # Saisie manuelle
             text_input = st.text_area("Titre de la news (ou description)",
                                        placeholder="Ex: BIAT annonce un PNB en hausse de 15%",
                                        height=100)
@@ -510,8 +525,6 @@ with tab7:
 - 🟢 **Achat potentiel** : sentiment positif MAIS cours pas encore monté
 - 🔴 **Vente potentielle** : sentiment négatif MAIS cours pas encore baissé
 - ⚪ **Cohérent** : sentiment et cours alignés
-
-**Historique** : les marchés mettent 1-3 semaines à intégrer pleinement l'information.
             """)
 
         window = st.radio("Fenetre d'analyse", ["7 jours", "14 jours", "30 jours"], index=2, horizontal=True)
@@ -525,7 +538,6 @@ with tab7:
         if len(df_div) == 0:
             st.warning(f"Aucune divergence detectee (pas assez de donnees sur {window})")
         else:
-            # Alertes en haut
             alerts = df_div[df_div["type"] != "Coherent"]
             if len(alerts) > 0:
                 for _, a in alerts.iterrows():
@@ -539,7 +551,6 @@ with tab7:
             st.dataframe(df_div[["ticker", "sentiment", "var_cours_pct", "nb_news", "divergence", "type"]],
                          use_container_width=True)
 
-            # Graphique
             fig = go.Figure()
             colors = ["#27AE60" if t == "Achat potentiel" else ("#E74C3C" if t == "Vente potentielle" else "#95A5A6")
                       for t in df_div["type"]]
