@@ -6,6 +6,7 @@ import feedparser
 import requests
 import pandas as pd
 import time
+import re
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from config import DATA_RAW
@@ -33,12 +34,14 @@ BANKS = {
 # =====================================================
 SECTOR_KEYWORDS = [
     "bancaire", "banque", "banques",
-    "BCT", "banque centrale",
+    "bct", "banque centrale",
     "credit", "crédit", "credits", "crédits",
     "taux directeur",
-    "PNB", "produit net bancaire",
+    "pnb", "produit net bancaire",
     "depot", "dépôt", "depots", "dépôts",
     "bvmt", "tunindex", "bourse de tunis",
+    "actionnaire", "dividende", "resultat", "résultat",
+    "bilan", "capital", "titre", "bourse",
 ]
 
 # =====================================================
@@ -48,12 +51,10 @@ RSS_DIRECT = {
     "ilboursa": [
         "https://www.ilboursa.com/rss/actualites",
         "https://www.ilboursa.com/rss",
-        "https://www.ilboursa.com/rss/news",
     ],
     "tustex": [
         "https://www.tustex.com/rss.xml",
         "https://www.tustex.com/fr/rss.xml",
-        "https://www.tustex.com/rss",
     ],
     "businessnews": [
         "https://www.businessnews.com.tn/rss.xml",
@@ -86,7 +87,6 @@ RSS_DIRECT = {
     ],
 }
 
-# Nombre de jours d'historique a conserver
 DAYS_BACK = 60
 
 
@@ -95,9 +95,12 @@ def google_news_url(query):
     return f"https://news.google.com/rss/search?q={q}&hl=fr&gl=TN&ceid=TN:fr"
 
 
-# =====================================================
-# FETCH GOOGLE NEWS
-# =====================================================
+def _clean_text(text):
+    if not text:
+        return ""
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def fetch_google_news(ticker, keywords, max_per_query=50):
     rows = []
     seen_titles = set()
@@ -107,7 +110,7 @@ def fetch_google_news(ticker, keywords, max_per_query=50):
         try:
             feed = feedparser.parse(url)
             for e in feed.entries[:max_per_query]:
-                title = getattr(e, "title", "").strip()
+                title = _clean_text(getattr(e, "title", ""))
                 if not title or title in seen_titles:
                     continue
                 seen_titles.add(title)
@@ -124,10 +127,10 @@ def fetch_google_news(ticker, keywords, max_per_query=50):
                 rows.append({
                     "date": date,
                     "title": title,
-                    "summary": getattr(e, "summary", ""),
+                    "summary": _clean_text(getattr(e, "summary", "")),
                     "source": source,
                     "url": getattr(e, "link", ""),
-                    "tickers": ticker,
+                    "tickers": None,
                 })
         except Exception as ex:
             print(f"[banks] Google News erreur {ticker}/{kw}: {ex}")
@@ -136,9 +139,6 @@ def fetch_google_news(ticker, keywords, max_per_query=50):
     return rows
 
 
-# =====================================================
-# FETCH RSS DIRECTS
-# =====================================================
 def fetch_direct_rss():
     all_rows = []
     successful_sources = []
@@ -152,7 +152,7 @@ def fetch_direct_rss():
                     continue
                 count = 0
                 for e in feed.entries:
-                    title = getattr(e, "title", "").strip()
+                    title = _clean_text(getattr(e, "title", ""))
                     if not title or len(title) < 15:
                         continue
 
@@ -164,7 +164,7 @@ def fetch_direct_rss():
                     all_rows.append({
                         "date": date,
                         "title": title,
-                        "summary": getattr(e, "summary", ""),
+                        "summary": _clean_text(getattr(e, "summary", "")),
                         "source": source_name,
                         "url": getattr(e, "link", ""),
                         "tickers": None,
@@ -175,12 +175,9 @@ def fetch_direct_rss():
                     successful_sources.append(f"{source_name} ({count})")
                     source_ok = True
                     break
-            except Exception as ex:
+            except Exception:
                 pass
             time.sleep(0.3)
-
-        if not source_ok:
-            print(f"[banks] {source_name} : aucun RSS disponible")
 
     if successful_sources:
         print(f"[banks] RSS directs OK : {', '.join(successful_sources)}")
@@ -189,29 +186,61 @@ def fetch_direct_rss():
 
 
 # =====================================================
-# MATCHING
+# MATCHING STRICT
 # =====================================================
-def detect_bank(text):
-    text = (text or "").lower()
+def _match_word_exact(text, word):
+    """Verifie si un mot apparait en tant que MOT ENTIER."""
+    pattern = r"\b" + re.escape(word) + r"\b"
+    return bool(re.search(pattern, text, re.IGNORECASE))
+
+
+def detect_bank_strict(text):
+    """
+    Detecte la banque avec correspondance STRICTE.
+    - Tickers courts (<=5 char) : mot entier uniquement
+    - Noms longs : substring OK
+    """
+    text_lower = text.lower()
+
     for ticker, keywords in BANKS.items():
-        if any(kw.lower() in text for kw in keywords):
-            return ticker
+        for kw in keywords:
+            kw_lower = kw.lower()
+            if len(kw) <= 5:
+                if _match_word_exact(text, kw):
+                    return ticker
+            else:
+                if kw_lower in text_lower:
+                    return ticker
     return None
 
 
 def is_sector_news(text):
-    text = (text or "").lower()
-    return any(kw.lower() in text for kw in SECTOR_KEYWORDS)
+    """Verifie si la news est bien sectorielle."""
+    text_lower = (text or "").lower()
+    return any(_match_word_exact(text, kw) for kw in SECTOR_KEYWORDS)
 
 
-def tag_news(df):
+def tag_news_strict(df):
+    """
+    Tag STRICT (assoupli) :
+    - Si ticker detecte (mot entier) -> assigne au ticker
+    - Sinon si secteur bancaire -> SECTEUR
+    - Sinon -> ignore
+    """
     def match(row):
-        text = (row["title"] or "") + " " + (row.get("summary", "") or "")
-        ticker = detect_bank(text)
+        text = (row["title"] or "") + ". " + (row.get("summary", "") or "")
+
+        ticker = detect_bank_strict(text)
+        sector = is_sector_news(text)
+
+        # Ticker detecte -> on garde (meme sans mot sectoriel)
         if ticker:
             return ticker
-        if is_sector_news(text):
+
+        # Sinon secteur -> SECTEUR
+        if sector:
             return "SECTEUR"
+
         return None
 
     df["tickers"] = df.apply(match, axis=1)
@@ -225,14 +254,12 @@ def tag_news(df):
 def ingest_banks_news():
     all_rows = []
 
-    # 1. Google News par banque
     print("[banks] Google News par banque...")
     for ticker, keywords in BANKS.items():
         rows = fetch_google_news(ticker, keywords)
         print(f"[banks]   {ticker}: {len(rows)} articles")
         all_rows.extend(rows)
 
-    # 2. RSS directs
     print("[banks] RSS directs tunisiens...")
     direct_rows = fetch_direct_rss()
     print(f"[banks]   {len(direct_rows)} articles des RSS directs")
@@ -246,9 +273,7 @@ def ingest_banks_news():
     df = df.drop_duplicates(subset=["title"]).dropna(subset=["title"])
     df = df[df["title"].str.len() > 15]
 
-    # =====================================================
-    # LIMITER A 60 JOURS
-    # =====================================================
+    # Filtre 60 jours
     df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
     cutoff = pd.Timestamp.now() - timedelta(days=DAYS_BACK)
     n_before = len(df)
@@ -256,8 +281,12 @@ def ingest_banks_news():
     n_after = len(df)
     print(f"[banks] Filtre {DAYS_BACK} jours : {n_before} -> {n_after} news")
 
-    # Tag
-    df = tag_news(df)
+    # Tag STRICT
+    n_before_tag = len(df)
+    df = tag_news_strict(df)
+    n_after_tag = len(df)
+    print(f"[banks] Filtre sectoriel : {n_before_tag} -> {n_after_tag} news")
+
     df = df.sort_values("date", ascending=False).reset_index(drop=True)
 
     out = f"{DATA_RAW}/banks_news.parquet"
