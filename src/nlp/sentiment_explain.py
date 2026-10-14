@@ -39,17 +39,20 @@ def explain_sentiment(text):
     for bg, weight in POSITIVE_BIGRAMS.items():
         count = text_lower.count(bg)
         if count > 0:
-            contributions.append({"word": bg, "weight": weight * min(count, 2), "type": "bigram_positif"})
-            score += weight * min(count, 2)
+            contributions.append({"word": bg, "weight": weight, "type": "bigram_positif"})
+            score += weight
     for bg, weight in NEGATIVE_BIGRAMS.items():
         count = text_lower.count(bg)
         if count > 0:
-            contributions.append({"word": bg, "weight": weight * min(count, 2), "type": "bigram_negatif"})
-            score += weight * min(count, 2)
+            contributions.append({"word": bg, "weight": weight, "type": "bigram_negatif"})
+            score += weight
 
-    # Mots individuels
+    # Mots individuels (avec deduplication)
+    seen_words = set()
     for i, word in enumerate(words):
         if word in BLACKLIST:
+            continue
+        if word in seen_words:
             continue
 
         weight = match_stem(word, POSITIVE_STEMS)
@@ -57,18 +60,14 @@ def explain_sentiment(text):
         if weight == 0.0:
             weight = match_stem(word, NEGATIVE_STEMS)
             wtype = "mot_negatif"
-        if weight == 0.0 and len(word) >= 4:
-            for en_stem, w in POSITIVE_EN.items():
-                if en_stem in word or word in en_stem:
-                    weight = w
-                    wtype = "mot_en_positif"
-                    break
-        if weight == 0.0 and len(word) >= 4:
-            for en_stem, w in NEGATIVE_EN.items():
-                if en_stem in word or word in en_stem:
-                    weight = w
-                    wtype = "mot_en_negatif"
-                    break
+
+        # Anglais : mot exact
+        if weight == 0.0 and word in POSITIVE_EN:
+            weight = POSITIVE_EN[word]
+            wtype = "mot_en_positif"
+        if weight == 0.0 and word in NEGATIVE_EN:
+            weight = NEGATIVE_EN[word]
+            wtype = "mot_en_negatif"
 
         if weight == 0.0:
             continue
@@ -96,20 +95,21 @@ def explain_sentiment(text):
             "intensifier": intens_found,
         })
         score += weight
+        seen_words.add(word)
 
-    # Normalisation
+    # Normalisation (IDENTIQUE a sentiment_fr.py)
     if len(contributions) == 0:
         return {
             "text": text,
             "score": 0.0,
             "contributions": [],
+            "n_signals": 0,
             "summary": "Aucun signal detecte (news neutre)",
         }
 
-    normalized = score / (len(contributions) ** 0.5 + 0.5)
+    normalized = score / (len(contributions) + 1)
     normalized = max(-1.0, min(1.0, normalized))
 
-    # Trier par contribution absolue
     contributions = sorted(contributions, key=lambda c: abs(c["weight"]), reverse=True)
 
     return {
@@ -123,15 +123,14 @@ def explain_sentiment(text):
 
 def _generate_summary(score, contributions):
     """Genere un resume en langage naturel."""
-    if abs(score) < 0.1:
-        return "News globalement neutre"
+    if abs(score) < 0.15:
+        return f"News globalement neutre (score {score:+.2f})"
 
-    # Top 3 contributions
     top = contributions[:3]
     pos_words = [c["word"] for c in top if c["weight"] > 0]
     neg_words = [c["word"] for c in top if c["weight"] < 0]
 
-    if score > 0.1:
+    if score > 0.15:
         summary = f"News positive (score {score:+.2f})"
         if pos_words:
             summary += f" - mots cles : {', '.join(pos_words[:3])}"
@@ -144,15 +143,14 @@ def _generate_summary(score, contributions):
 
 
 def explain_news(title, summary=""):
-    """Fonction pratique pour une news complete."""
     text = (title or "") + ". " + (summary or "")
     return explain_sentiment(text)
 
 
 if __name__ == "__main__":
     tests = [
-        "BIAT annonce un PNB en hausse de 15%",
-        "STB : amende de 5 millions de dinars suite a une fraude",
+        "ZB Tunisie : Banque Zitouna et l'OIT s'allient pour doter les ingenieurs d'une offre de financement",
+        "BIAT : Une transaction de bloc realisee pour 10,5 MD",
         "ATB : resultats en baisse, deficit de 20 MTND",
         "UBCI : solidite financiere confirmee, croissance soutenue",
         "BH Bank : pas de benefice cette annee",

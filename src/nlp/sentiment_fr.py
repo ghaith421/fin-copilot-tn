@@ -31,7 +31,8 @@ POSITIVE_STEMS = {
     "solvab": 0.7, "capitalis": 0.6, "upgrad": 0.8,
     "recouvr": 0.5, "assainissement": 0.6,
     "annonce": 0.3, "publi": 0.3, "présent": 0.4, "present": 0.4,
-    "réalis": 0.5, "realis": 0.5, "attei": 0.6, "dépass": 0.7, "depass": 0.7,
+    "réalis": 0.2, "realis": 0.2,  # Reduit (etait 0.5) - mot trop neutre
+    "attei": 0.6, "dépass": 0.7, "depass": 0.7,
     "confirme": 0.4, "réaffirme": 0.4, "reaffirme": 0.4,
     "renforce": 0.5, "consolide": 0.5, "développe": 0.5, "developpe": 0.5,
     "augmente": 0.8, "progresse": 0.8, "grimpe": 0.9,
@@ -74,6 +75,9 @@ NEGATIVE_STEMS = {
     "fragilis": -0.6,
 }
 
+# =========================================================
+# TERMES ANGLAIS (mot exact uniquement)
+# =========================================================
 POSITIVE_EN = {
     "growth": 0.9, "increase": 0.8, "rise": 0.9, "gain": 0.8,
     "profit": 0.9, "excellent": 1.0, "strong": 0.8,
@@ -166,6 +170,9 @@ NEGATIVE_BIGRAMS = {
     "perte de clientèle": -0.7, "perte de clientele": -0.7,
 }
 
+# =========================================================
+# TRIGRAMMES
+# =========================================================
 POSITIVE_TRIGRAMS = {
     "résultat en hausse": 1.3, "resultat en hausse": 1.3,
     "bénéfice en hausse": 1.3, "benefice en hausse": 1.3,
@@ -184,6 +191,9 @@ NEGATIVE_TRIGRAMS = {
     "défaut de paiement": -1.0, "defaut de paiement": -1.0,
 }
 
+# =========================================================
+# INTENSIFICATEURS
+# =========================================================
 INTENSIFIERS = {
     "fortement": 1.3, "significativement": 1.3, "considérablement": 1.3,
     "considerablement": 1.3, "très": 1.2, "tres": 1.2,
@@ -193,19 +203,25 @@ INTENSIFIERS = {
     "totalement": 1.3, "entièrement": 1.2,
 }
 
+# =========================================================
+# NEGATIONS ET BLACKLIST
+# =========================================================
 NEGATIONS = {"pas", "non", "aucun", "aucune", "sans", "jamais",
              "ni", "ne", "n'", "point", "guère", "guere", "rien"}
 
 BLACKLIST = {
+    # Banques
     "amen", "biat", "atb", "uib", "bna", "bh", "stb", "bt", "bte",
     "ubci", "wifak", "zitouna", "attijari", "tunindex", "tunisie",
     "tunis", "banque", "bank", "bancaire", "bvmt", "bourse",
     "action", "actions", "marche", "marches", "cours",
+    # Mots neutres frequents (pour eviter faux positifs)
     "cette", "leurs", "notre", "votre",
+    "entreprises", "entreprise", "societes", "societe",
+    "bloc", "transaction",
+    "realisee", "realise", "realises", "realisees",
+    "realisation", "realisations",
 }
-
-# Poids maximum par mot (pour eviter le surpoids)
-MAX_REPETITIONS = 1  # chaque mot compte UNE SEULE FOIS
 
 
 def match_stem(word, stem_dict):
@@ -221,7 +237,8 @@ def keyword_sentiment_enriched(text):
     - Trigrammes, bigrammes
     - Mots avec racines
     - Negation
-    - Limitation des repetitions (chaque mot compte 1 fois)
+    - Deduplication des mots
+    - Anglais : correspondance mot exact
     """
     text = (text or "").strip()
     text_lower = text.lower()
@@ -229,7 +246,6 @@ def keyword_sentiment_enriched(text):
 
     score = 0.0
     matches = 0
-    seen_stems = set()  # pour eviter les repetitions
 
     # Trigrammes
     for tg, weight in POSITIVE_TRIGRAMS.items():
@@ -251,27 +267,23 @@ def keyword_sentiment_enriched(text):
             score += weight
             matches += 1
 
-    # Mots individuels (avec deduplication par mot)
+    # Mots individuels
     seen_words = set()
     for i, word in enumerate(words):
         if word in BLACKLIST:
             continue
         if word in seen_words:
-            continue  # deja compte
+            continue
 
         weight = match_stem(word, POSITIVE_STEMS)
         if weight == 0.0:
             weight = match_stem(word, NEGATIVE_STEMS)
-        if weight == 0.0 and len(word) >= 4:
-            for en_stem, w in POSITIVE_EN.items():
-                if en_stem in word or word in en_stem:
-                    weight = w
-                    break
-        if weight == 0.0 and len(word) >= 4:
-            for en_stem, w in NEGATIVE_EN.items():
-                if en_stem in word or word in en_stem:
-                    weight = w
-                    break
+
+        # Anglais : MOT EXACT uniquement
+        if weight == 0.0 and word in POSITIVE_EN:
+            weight = POSITIVE_EN[word]
+        if weight == 0.0 and word in NEGATIVE_EN:
+            weight = NEGATIVE_EN[word]
 
         if weight == 0.0:
             continue
@@ -306,7 +318,6 @@ def keyword_sentiment_enriched(text):
     if matches == 0:
         return 0.0, 0
 
-    # Normalisation avec division plus forte pour eviter les extremes
     normalized = score / (matches + 1)
     return float(np.clip(normalized, -1.0, 1.0)), matches
 
@@ -319,7 +330,6 @@ EVENT_PATTERNS = {
     "fusion": r"(fusion|acquisition|OPA|partenariat|rachat)",
     "direction": r"(directeur|PDG|DG|président|president|nomination|démission|demission)",
     "npl": r"(creance|créance|impaye|impayé|npl|non.performing|douteux|loan.loss)",
-    "prix": r"(prix|recompense|récompense|distinction|award|laureat|lauréat)",
 }
 
 
