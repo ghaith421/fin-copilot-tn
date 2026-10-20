@@ -50,7 +50,7 @@ def refresh_prices():
 
 
 def refresh_sentiment():
-    """Rafraichit le sentiment (mots-cles uniquement, rapide)."""
+    """Rafraichit le sentiment avec le modele ML finance (avec fallback)."""
     path = f"{DATA_RAW}/banks_news_scored.parquet"
     news_path = f"{DATA_RAW}/banks_news.parquet"
 
@@ -59,20 +59,27 @@ def refresh_sentiment():
             print(f"[auto] Sentiment deja a jour")
             return False
 
-    print("[auto] Analyse du sentiment (mots-cles)...")
+    print("[auto] Analyse du sentiment (modele ML finance)...")
     try:
-        from src.nlp.sentiment_fr import score_news_keywords_only
-        score_news_keywords_only()
+        from src.nlp.sentiment_ml import score_news_ml
+        score_news_ml()
         return True
     except Exception as ex:
-        print(f"[auto] Erreur sentiment : {ex}")
-        return False
+        print(f"[auto] Erreur ML : {ex}")
+        print("[auto] Fallback sur mots-cles...")
+        try:
+            from src.nlp.sentiment_fr import score_news_keywords_only
+            score_news_keywords_only()
+            return True
+        except Exception as ex2:
+            print(f"[auto] Erreur fallback : {ex2}")
+            return False
 
 
 def refresh_history():
     """Rafraichit l'historique des prix BVMT (1 fois par jour)."""
     path = f"{DATA_RAW}/bvmt_history.parquet"
-    if not needs_refresh(path, max_age_minutes=24 * 60):  # 24 heures
+    if not needs_refresh(path, max_age_minutes=24 * 60):
         print(f"[auto] Historique deja frais")
         return False
 
